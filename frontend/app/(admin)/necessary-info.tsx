@@ -30,6 +30,7 @@ import { Button } from "@/src/components/Button";
 import { Segmented } from "@/src/components/Segmented";
 import { Toast } from "@/src/components/Toast";
 import { radius, shadow, spacing, typography, colors, useTheme, type ThemeColors } from "@/src/theme";
+import { SubscriptionGuard } from "@/src/subscription/components/SubscriptionGuard";
 
 const DAYS = [
   "monday",
@@ -460,15 +461,18 @@ export default function AdminNecessaryInfo() {
 
   if (loading) {
     return (
+      <SubscriptionGuard role="admin">
       <SafeAreaView style={styles.safe} edges={["top"]}>
         <View style={styles.center}>
           <ActivityIndicator color={c.primary} />
         </View>
       </SafeAreaView>
+      </SubscriptionGuard>
     );
   }
 
   return (
+    <SubscriptionGuard role="admin">
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <Toast
         testID="ni-toast"
@@ -630,6 +634,7 @@ export default function AdminNecessaryInfo() {
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
+    </SubscriptionGuard>
   );
 }
 

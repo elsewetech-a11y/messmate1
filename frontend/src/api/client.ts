@@ -13,6 +13,109 @@ export type MealType = "breakfast" | "lunch" | "dinner";
 export type Reaction = "like" | "dislike" | "no_response";
 export type Unit = "pieces" | "grams" | "kg" | "ml" | "litres";
 
+export type SubscriptionStatus = "TRIAL_ACTIVE" | "ACTIVE" | "TRIAL_EXPIRED" | "SUBSCRIPTION_EXPIRED" | "PAYMENT_PENDING" | "SUSPENDED";
+
+export type SubscriptionPublic = {
+  institution_or_hostel_name: string;
+  status: SubscriptionStatus;
+  is_trial: boolean;
+  days_remaining: number;
+  expiry_date?: string;
+  student_limit: number;
+  registered_students: number;
+  plan_type?: "monthly" | "yearly";
+  auto_renew?: boolean;
+  communication_preferences?: CommunicationPreferences;
+};
+
+export type SubscriptionEventPublic = {
+  id: string;
+  institution_or_hostel_name: string;
+  event_type: string;
+  event_date: string;
+  details: any;
+};
+
+export type UpgradeOrderRequest = {
+  additional_students: number;
+};
+
+export type OrderCreateRequest = {
+  plan_type: "monthly" | "yearly";
+  student_count: number;
+};
+
+export type OrderCreateResponse = {
+  order_id: string;
+  amount: number;
+  currency: string;
+};
+
+export type PaymentVerifyRequest = {
+  order_id: string;
+  payment_id: string;
+  signature: string;
+};
+
+export type TransactionPublic = {
+  id: string;
+  institution_or_hostel_name: string;
+  admin_id?: string | null;
+  order_id: string;
+  payment_id: string | null;
+  provider: string;
+  amount: number;
+  currency: string;
+  status: "PENDING" | "SUCCESS" | "FAILED";
+  transaction_date: string | null;
+  plan_type: string;
+  student_count: number;
+  error_message?: string | null;
+  action?: string | null;
+};
+
+export type NotificationPublic = {
+  id: string;
+  institution_or_hostel_name: string;
+  admin_id?: string | null;
+  category: "TRIAL" | "SUBSCRIPTION" | "PAYMENT" | "CAPACITY" | "SYSTEM" | "SECURITY";
+  title: string;
+  description: string;
+  created_at: string;
+  read_status: boolean;
+  action_url?: string | null;
+};
+
+export type BillingContact = {
+  name: string;
+  email: string;
+  phone_number: string;
+  designation: string;
+};
+
+export type CommunicationPreferences = {
+  email_notifications: boolean;
+  push_notifications: boolean;
+  capacity_alerts: boolean;
+  renewal_reminders: boolean;
+  payment_confirmations: boolean;
+  invoice_emails: boolean;
+};
+
+export type InvoicePublic = {
+  id: string;
+  invoice_number: string;
+  institution_or_hostel_name: string;
+  amount: number;
+  tax: number;
+  status: string;
+  created_at: string;
+  plan_type: string;
+  student_count: number;
+  subscription_period: string;
+  payment_date: string;
+};
+
 export type User = {
   id: string;
   full_name: string;
@@ -30,6 +133,7 @@ export type User = {
 export type TokenResponse = {
   access_token: string;
   token_type: string;
+  refresh_token?: string;
   user: User;
 };
 
@@ -99,6 +203,7 @@ export type StudentsSummary = {
 export type StudentRow = {
   id: string;
   full_name: string;
+  email?: string;
   mobile_or_user_id: string;
   institution_or_hostel_name: string;
   room_number?: string | null;
@@ -200,6 +305,26 @@ export type AdminWastageToday = {
   saved_amount_vs_avg: number | null;
 };
 
+export type RecurringNotification = {
+  id: string;
+  adminId: string;
+  title: string;
+  message: string;
+  notificationType: "Daily" | "Weekly" | "One Time";
+  scheduledTime: string;
+  startDate: string;
+  endDate: string | null;
+  isActive: boolean;
+  lastSentAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  stats: {
+    totalRecipients: number;
+    delivered: number;
+    failed: number;
+  };
+};
+
 export type AdminWastageTrend = {
   range: number;
   meal: "all" | MealType;
@@ -269,7 +394,8 @@ async function request<T>(
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (token) headers.Authorization = `Bearer ${token}`;
 
-  const res = await fetch(`${BASE_URL}/api${path}`, {
+  const finalPath = path.startsWith("/api") ? path : `/api${path}`;
+  const res = await fetch(`${BASE_URL}${finalPath}`, {
     method,
     headers,
     body: body ? JSON.stringify(body) : undefined,
@@ -283,6 +409,13 @@ async function request<T>(
     let msg = `Request failed (${res.status})`;
     if (typeof detail === "string") msg = detail;
     else if (detail && typeof detail === "object" && detail.message) msg = detail.message;
+    
+    // Check for expired token (401)
+    if (res.status === 401 && msg.toLowerCase().includes("expired")) {
+        // Here we could theoretically trigger a token refresh
+        // But for this frontend architecture, we'll let AuthContext handle the redirect
+    }
+    
     maybeFireSessionInvalidated(res.status, data);
     throw new ApiError(msg, res.status, data);
   }
@@ -290,6 +423,21 @@ async function request<T>(
 }
 
 export const api = {
+  refreshToken: (payload: { refresh_token: string }): Promise<TokenResponse> => request("/api/auth/refresh", { method: "POST", body: payload }),
+  getSubscriptionStatus: (token: string): Promise<SubscriptionPublic> => request("/api/subscription/status", { token }),
+  renewSubscription: (token: string): Promise<{success: boolean; message: string}> => request("/api/subscription/renew", { token, method: "POST" }),
+  createSubscriptionOrder: (token: string, payload: OrderCreateRequest): Promise<OrderCreateResponse> => request("/api/subscription/order", { token, method: "POST", body: payload }),
+  verifyPayment: (token: string, payload: PaymentVerifyRequest): Promise<{success: boolean; message: string}> => request("/api/subscription/verify-payment", { token, method: "POST", body: payload }),
+  reportPaymentFailed: (token: string, payload: { order_id: string; error_message: string; payment_id?: string }): Promise<{success: boolean}> => request("/api/subscription/payment-failed", { token, method: "POST", body: payload }),
+  toggleAutoRenew: (token: string, payload: { enabled: boolean }): Promise<{success: boolean; auto_renew: boolean}> => request("/api/subscription/auto-renew", { token, method: "PUT", body: payload }),
+  getPaymentHistory: (token: string): Promise<TransactionPublic[]> => request("/api/subscription/transactions", { token }),
+  getInvoices: (token: string): Promise<InvoicePublic[]> => request("/api/subscription/invoices", { token }),
+  getSubscriptionEvents: (token: string): Promise<SubscriptionEventPublic[]> => request("/api/subscription/events", { token }),
+  createUpgradeOrder: (token: string, payload: UpgradeOrderRequest): Promise<OrderCreateResponse> => request("/api/subscription/upgrade-order", { token, method: "POST", body: payload }),
+  getNotifications: (token: string): Promise<NotificationPublic[]> => request("/api/notifications", { token }),
+  markNotificationRead: (token: string, notificationId: string): Promise<{success: boolean}> => request(`/api/notifications/${notificationId}/read`, { token, method: "PUT" }),
+  updateCommunicationPreferences: (token: string, payload: CommunicationPreferences): Promise<{success: boolean}> => request("/api/subscription/preferences", { token, method: "PUT", body: payload }),
+  updateBillingContact: (token: string, payload: BillingContact): Promise<{success: boolean}> => request("/api/subscription/billing-contact", { token, method: "PUT", body: payload }),
   // Auth — email OTP
   register: (payload: {
     full_name: string;
@@ -306,7 +454,7 @@ export const api = {
       expires_in: number;
     }>("/auth/register", { method: "POST", body: payload }),
   verifyEmail: (payload: { email: string; otp: string }) =>
-    request<TokenResponse>("/auth/verify-email", { method: "POST", body: payload }),
+    request<TokenResponse | { status: string; email: string }>("/auth/verify-email", { method: "POST", body: payload }),
   login: (payload: { email: string; password: string }) =>
     request<TokenResponse>("/auth/login", { method: "POST", body: payload }),
   resendOtp: (payload: { email: string; purpose: "registration" | "forgot_password" }) =>
@@ -408,7 +556,7 @@ export const api = {
       { token },
     ),
   adminApprove: (token: string, id: string) =>
-    request<{ ok: boolean }>(`/admin/students/${id}/approve`, {
+    request<{ ok: boolean; status?: string; message?: string }>(`/admin/students/${id}/approve`, {
       method: "POST",
       token,
     }),
@@ -497,7 +645,9 @@ export const api = {
   adminSettings: (token: string) =>
     request<AppSettings>("/admin/settings", { token }),
   adminSettingsUpdate: (token: string, body: Partial<AppSettings>) =>
-    request<AppSettings>("/admin/settings", { method: "PUT", body, token }),
+    request<{ status: string; id: string }>("/admin/settings", { method: "PUT", body: body, token }),
+  
+  // Admin — Notifications
 
   // Notifications
   studentNotifications: (token: string) =>
@@ -519,6 +669,11 @@ export const api = {
   markNotifRead: (token: string, id: string) =>
     request<{ ok: boolean }>(`/student/notifications/${id}/read`, {
       method: "POST",
+      token,
+    }),
+  deleteStudentNotif: (token: string, id: string) =>
+    request<{ ok: boolean }>(`/student/notifications/${id}`, {
+      method: "DELETE",
       token,
     }),
   adminNotifications: (token: string) =>
@@ -543,6 +698,7 @@ export const api = {
       audience?: "all" | "student";
       recipient_id?: string;
       type?: "announcement" | "menu_reminder" | "system";
+      action_url?: string;
       scheduled_for?: string;
       send_at?: string; // ISO datetime — when to actually fire
     },
@@ -590,6 +746,52 @@ export const api = {
     }>("/admin/notifications/dispatch-reminder", {
       method: "POST",
       body: payload,
+      token,
+    }),
+  
+  // Recurring Notifications
+  adminListScheduledNotifications: (token: string) =>
+    request<{ items: RecurringNotification[] }>("/admin/scheduled-notifications", { token }),
+  
+  adminCreateScheduledNotification: (
+    token: string,
+    body: {
+      title: string;
+      message: string;
+      notificationType: "Daily" | "Weekly" | "One Time";
+      scheduledTime: string;
+      startDate: string;
+      endDate?: string | null;
+    }
+  ) =>
+    request<RecurringNotification>("/admin/scheduled-notifications", {
+      method: "POST",
+      body,
+      token,
+    }),
+    
+  adminUpdateScheduledNotification: (
+    token: string,
+    id: string,
+    body: Partial<{
+      title: string;
+      message: string;
+      notificationType: "Daily" | "Weekly" | "One Time";
+      scheduledTime: string;
+      startDate: string;
+      endDate: string | null;
+      isActive: boolean;
+    }>
+  ) =>
+    request<RecurringNotification>(`/admin/scheduled-notifications/${id}`, {
+      method: "PUT",
+      body,
+      token,
+    }),
+    
+  adminDeleteScheduledNotification: (token: string, id: string) =>
+    request<null>(`/admin/scheduled-notifications/${id}`, {
+      method: "DELETE",
       token,
     }),
 };

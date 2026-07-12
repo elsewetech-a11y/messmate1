@@ -3,7 +3,7 @@
 import { Feather } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import React, { useMemo } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Image, Pressable, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import Animated, { FadeInDown, FadeInUp } from "react-native-reanimated";
 
@@ -18,9 +18,12 @@ export default function Welcome() {
     <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
       <View style={styles.container}>
         <Animated.View entering={FadeInUp.duration(450)} style={styles.heroWrap}>
-          <View style={styles.logoCircle} testID="messmate-logo">
-            <Feather name="award" size={42} color={c.primary} />
-          </View>
+          <Image
+            source={require("../assets/images/messmate-logo.png")}
+            style={styles.logoImage}
+            resizeMode="contain"
+            testID="messmate-logo"
+          />
           <Text style={styles.brand} testID="welcome-title">MessMate</Text>
           <Text style={styles.subtitle} testID="welcome-subtitle">
             Reduce food waste. Plan meals smarter. Improve mess transparency.
@@ -90,13 +93,9 @@ const makeStyles = (c: ThemeColors) =>
       justifyContent: "space-between",
     },
     heroWrap: { alignItems: "center", marginTop: spacing.xxl },
-    logoCircle: {
-      width: 84,
-      height: 84,
-      borderRadius: 42,
-      backgroundColor: c.primaryLight,
-      alignItems: "center",
-      justifyContent: "center",
+    logoImage: {
+      width: 110,
+      height: 110,
       marginBottom: spacing.lg,
     },
     brand: { ...typography.largeTitle, color: c.textPrimary, marginBottom: 8 },

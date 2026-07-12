@@ -60,6 +60,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           }
         } catch {
           await storage.secureRemove(TOKEN_KEY);
+          await storage.secureRemove("messmate.refresh");
           await storage.removeItem(USER_KEY);
         }
       }
@@ -69,6 +70,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const setSession: AuthContextValue["setSession"] = useCallback(async (resp) => {
     await storage.secureSet(TOKEN_KEY, resp.access_token);
+    if (resp.refresh_token) {
+        await storage.secureSet("messmate.refresh", resp.refresh_token);
+    }
     await storage.setItem(USER_KEY, JSON.stringify(resp.user));
     setToken(resp.access_token);
     setUser(resp.user);
@@ -85,6 +89,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logout = useCallback(async () => {
     await storage.secureRemove(TOKEN_KEY);
+    await storage.secureRemove("messmate.refresh");
     await storage.removeItem(USER_KEY);
     setToken(null);
     setUser(null);

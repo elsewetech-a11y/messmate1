@@ -2,6 +2,7 @@
 // Approval list (pending) + meal-wise breakdown (eating/items/reasons/custom Q) + feedback.
 
 import { Feather } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
@@ -11,6 +12,8 @@ import {
   Text,
   TouchableOpacity,
   View,
+  Modal,
+  TextInput,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -28,6 +31,7 @@ import { Segmented } from "@/src/components/Segmented";
 import { StatTile } from "@/src/components/StatTile";
 import { Toast } from "@/src/components/Toast";
 import { radius, shadow, spacing, typography, colors, useTheme, type ThemeColors } from "@/src/theme";
+import { SubscriptionGuard } from "@/src/subscription/components/SubscriptionGuard";
 
 const MEAL_ICON: Record<MealType, keyof typeof Feather.glyphMap> = {
   breakfast: "coffee",
@@ -42,6 +46,7 @@ function cap(s: string) {
 export default function AdminStudentsStatus() {
   const { c } = useTheme();
   const styles = useMemo(() => makeStyles(c), [c]);
+  const router = useRouter();
   const { token } = useAuth();
   const [summary, setSummary] = useState<StudentsSummary | null>(null);
   const [pending, setPending] = useState<StudentRow[]>([]);
@@ -57,6 +62,35 @@ export default function AdminStudentsStatus() {
     message: string;
     variant: "success" | "error" | "info";
   } | null>(null);
+
+  // Notification Modal State
+  const [showNotifModal, setShowNotifModal] = useState(false);
+  const [notifTitle, setNotifTitle] = useState("Tomorrow's Plan Reminder");
+  const [notifBody, setNotifBody] = useState("Please open the app and submit your Tomorrow's Plan before today's deadline.");
+  const [sendingNotif, setSendingNotif] = useState(false);
+
+  const onSendNotification = async () => {
+    if (!token) return;
+    if (!notifTitle.trim() || !notifBody.trim()) {
+      setToast({ message: "Title and message are required", variant: "error" });
+      return;
+    }
+    setSendingNotif(true);
+    try {
+      await api.adminCreateNotification(token, {
+        title: notifTitle.trim(),
+        body: notifBody.trim(),
+        audience: "student",
+        action_url: "/(student)/home?day=tomorrow",
+      });
+      setShowNotifModal(false);
+      setToast({ message: "Notification sent!", variant: "success" });
+    } catch (e: any) {
+      setToast({ message: e?.message || "Failed to send notification", variant: "error" });
+    } finally {
+      setSendingNotif(false);
+    }
+  };
 
   const load = useCallback(async () => {
     if (!token) return;
@@ -87,8 +121,12 @@ export default function AdminStudentsStatus() {
     if (!token) return;
     setActing(id);
     try {
-      await api.adminApprove(token, id);
-      setToast({ message: "Student approved", variant: "success" });
+      const res = await api.adminApprove(token, id);
+      if (res.status === "pending_capacity") {
+        setToast({ message: "Capacity reached. Added to Pending Queue.", variant: "info" });
+      } else {
+        setToast({ message: "Student approved", variant: "success" });
+      }
       await load();
     } catch (e: any) {
       setToast({ message: e?.message || "Failed", variant: "error" });
@@ -118,15 +156,18 @@ export default function AdminStudentsStatus() {
 
   if (loading) {
     return (
+      <SubscriptionGuard role="admin">
       <SafeAreaView style={styles.safe} edges={["top"]}>
         <View style={styles.center}>
           <ActivityIndicator color={colors.primary} />
         </View>
       </SafeAreaView>
+      </SubscriptionGuard>
     );
   }
 
   return (
+    <SubscriptionGuard role="admin">
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <Toast
         testID="admin-status-toast"
@@ -147,12 +188,21 @@ export default function AdminStudentsStatus() {
           />
         }
       >
-        <View style={styles.header}>
-          <Text style={styles.eyebrow}>ADMIN</Text>
-          <Text style={styles.title}>Students Status</Text>
-          <Text style={styles.subtitle}>
-            Approvals, eating intent, preferences, reactions, reasons & feedback.
-          </Text>
+        <View style={[styles.header, { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" }]}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.eyebrow}>ADMIN</Text>
+            <Text style={styles.title}>Students Status</Text>
+            <Text style={styles.subtitle}>
+              Approvals, eating intent, preferences, reactions, reasons & feedback.
+            </Text>
+          </View>
+          <TouchableOpacity
+            style={styles.notifBtn}
+            onPress={() => router.push("/notifications")}
+            activeOpacity={0.7}
+          >
+            <Feather name="bell" size={24} color={c.textPrimary} />
+          </TouchableOpacity>
         </View>
 
         {/* Summary tiles */}
@@ -193,48 +243,68 @@ export default function AdminStudentsStatus() {
             <Text style={styles.muted}>No pending approvals 🎉</Text>
           </View>
         ) : (
-          pending.map((s) => (
-            <View key={s.id} style={styles.studentCard} testID={`pending-${s.id}`}>
-              <View style={styles.studentRow}>
-                <View style={styles.avatar}>
-                  <Text style={styles.avatarLetter}>
-                    {(s.full_name[0] || "?").toUpperCase()}
-                  </Text>
+          pending.map((s) => {
+            const isPendingCapacity = (s as any).approval_status === "pending_capacity";
+            return (
+              <View key={s.id} style={[styles.studentCard, isPendingCapacity && { borderColor: c.warning, borderWidth: 1 }]} testID={`pending-${s.id}`}>
+                <View style={styles.studentRow}>
+                  <View style={styles.avatar}>
+                    <Text style={styles.avatarLetter}>
+                      {(s.full_name[0] || "?").toUpperCase()}
+                    </Text>
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.studentName}>{s.full_name}</Text>
+                    <Text style={styles.studentMeta}>
+                      {s.email || s.mobile_or_user_id}
+                    </Text>
+                    <Text style={styles.studentMeta}>{s.institution_or_hostel_name}</Text>
+                    {isPendingCapacity && (
+                      <Text style={[styles.studentMeta, { color: c.warning, marginTop: 4, fontWeight: "500" }]}>
+                        Reason: Institution has reached its purchased student capacity.
+                      </Text>
+                    )}
+                  </View>
                 </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.studentName}>{s.full_name}</Text>
-                  <Text style={styles.studentMeta}>
-                    {s.email || s.mobile_or_user_id}
-                  </Text>
-                  <Text style={styles.studentMeta}>{s.institution_or_hostel_name}</Text>
+                <View style={styles.actionRow}>
+                  {isPendingCapacity ? (
+                    <TouchableOpacity
+                      testID={`upgrade-${s.id}`}
+                      activeOpacity={0.85}
+                      style={[styles.actBtn, { backgroundColor: c.warning }]}
+                      onPress={() => router.push("/(admin)/subscription" as any)}
+                    >
+                      <Feather name="arrow-up-circle" size={16} color="#fff" />
+                      <Text style={styles.actBtnText}>Approve After Upgrade</Text>
+                    </TouchableOpacity>
+                  ) : (
+                    <TouchableOpacity
+                      testID={`approve-${s.id}`}
+                      activeOpacity={0.85}
+                      style={[styles.actBtn, { backgroundColor: c.primary }]}
+                      onPress={() => onApprove(s.id)}
+                      disabled={acting === s.id}
+                    >
+                      <Feather name="check" size={16} color="#fff" />
+                      <Text style={styles.actBtnText}>Approve</Text>
+                    </TouchableOpacity>
+                  )}
+                  <TouchableOpacity
+                    testID={`reject-${s.id}`}
+                    activeOpacity={0.85}
+                    style={[styles.actBtn, { backgroundColor: c.inputBg }]}
+                    onPress={() => onReject(s.id)}
+                    disabled={acting === s.id}
+                  >
+                    <Feather name="x" size={16} color={c.danger} />
+                    <Text style={[styles.actBtnText, { color: c.danger }]}>
+                      Reject
+                    </Text>
+                  </TouchableOpacity>
                 </View>
               </View>
-              <View style={styles.actionRow}>
-                <TouchableOpacity
-                  testID={`approve-${s.id}`}
-                  activeOpacity={0.85}
-                  style={[styles.actBtn, { backgroundColor: c.primary }]}
-                  onPress={() => onApprove(s.id)}
-                  disabled={acting === s.id}
-                >
-                  <Feather name="check" size={16} color="#fff" />
-                  <Text style={styles.actBtnText}>Approve</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  testID={`reject-${s.id}`}
-                  activeOpacity={0.85}
-                  style={[styles.actBtn, { backgroundColor: c.inputBg }]}
-                  onPress={() => onReject(s.id)}
-                  disabled={acting === s.id}
-                >
-                  <Feather name="x" size={16} color={c.danger} />
-                  <Text style={[styles.actBtnText, { color: c.danger }]}>
-                    Reject
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          ))
+            );
+          })
         )}
 
         {/* Today's summary */}
@@ -407,7 +477,75 @@ export default function AdminStudentsStatus() {
           </View>
         )}
       </ScrollView>
+
+      {/* Notification Modal */}
+      <Modal
+        visible={showNotifModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowNotifModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Send Notification</Text>
+              <TouchableOpacity onPress={() => setShowNotifModal(false)} hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}>
+                <Feather name="x" size={24} color={c.textSecondary} />
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.inputLabel}>Notification Title</Text>
+            <TextInput
+              style={styles.input}
+              value={notifTitle}
+              onChangeText={setNotifTitle}
+              placeholder="e.g. Reminder"
+              placeholderTextColor={c.textTertiary}
+            />
+
+            <Text style={styles.inputLabel}>Notification Message</Text>
+            <TextInput
+              style={[styles.input, styles.textArea]}
+              value={notifBody}
+              onChangeText={setNotifBody}
+              multiline
+              textAlignVertical="top"
+              placeholder="Type your message here..."
+              placeholderTextColor={c.textTertiary}
+            />
+
+            <Text style={styles.inputLabel}>Live Preview</Text>
+            <View style={styles.previewBox}>
+              <View style={styles.previewRow}>
+                <View style={styles.previewIcon}>
+                  <Feather name="bell" size={14} color="#fff" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.previewTitle} numberOfLines={1}>{notifTitle || "Title"}</Text>
+                  <Text style={styles.previewBody}>{notifBody || "Message"}</Text>
+                </View>
+              </View>
+            </View>
+
+            <TouchableOpacity
+              style={[styles.sendBtn, sendingNotif && { opacity: 0.6 }]}
+              onPress={onSendNotification}
+              disabled={sendingNotif}
+            >
+              {sendingNotif ? (
+                <ActivityIndicator color="#fff" size="small" />
+              ) : (
+                <>
+                  <Feather name="send" size={16} color="#fff" />
+                  <Text style={styles.sendBtnText}>Send Notification</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
+    </SubscriptionGuard>
   );
 }
 
@@ -532,4 +670,80 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   fbRow: { flexDirection: "row", gap: 8, paddingVertical: 6 },
   fbText: { ...typography.subhead, color: c.textPrimary, lineHeight: 20 },
   fbMeta: { ...typography.caption, color: c.textTertiary, marginTop: 2 },
+
+  notifBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: c.inputBg,
+    alignItems: "center",
+    justifyContent: "center",
+    marginLeft: spacing.md,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "center",
+    padding: spacing.lg,
+  },
+  modalContent: {
+    backgroundColor: c.card,
+    borderRadius: radius.xl,
+    padding: spacing.lg,
+    ...shadow.card,
+  },
+  modalHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: spacing.lg,
+  },
+  modalTitle: { ...typography.headline, color: c.textPrimary },
+  inputLabel: {
+    ...typography.caption,
+    color: c.textSecondary,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    marginBottom: 6,
+    marginTop: spacing.md,
+  },
+  input: {
+    backgroundColor: c.inputBg,
+    borderRadius: radius.md,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    color: c.textPrimary,
+    ...typography.body,
+    minHeight: 48,
+  },
+  textArea: { minHeight: 80, paddingTop: 14 },
+  previewBox: {
+    backgroundColor: c.inputBg,
+    borderRadius: radius.md,
+    padding: spacing.md,
+    marginTop: 4,
+  },
+  previewRow: { flexDirection: "row", gap: 12, alignItems: "flex-start" },
+  previewIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: c.primary,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 2,
+  },
+  previewTitle: { ...typography.subhead, color: c.textPrimary, fontWeight: "600", marginBottom: 2 },
+  previewBody: { ...typography.caption, color: c.textSecondary, lineHeight: 18 },
+  sendBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: c.primary,
+    paddingVertical: 14,
+    borderRadius: radius.lg,
+    marginTop: spacing.xl,
+  },
+  sendBtnText: { ...typography.body, color: "#fff", fontWeight: "700" },
 });

@@ -1,8 +1,9 @@
 // Student Settings — profile + account/app placeholders + logout.
 
 import { Feather } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
 import React, { useMemo } from "react";
-import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { Linking, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { useAuth } from "@/src/auth/AuthContext";
@@ -52,6 +53,7 @@ export default function StudentSettings() {
   const { c } = useTheme();
   const styles = useMemo(() => makeStyles(c), [c]);
   const { user, logout } = useAuth();
+  const router = useRouter();
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
@@ -142,6 +144,60 @@ export default function StudentSettings() {
             testID="student-row-language"
             disabledNote
           />
+        </View>
+
+        {/* Legal */}
+        <Text style={styles.sectionLabel}>Legal</Text>
+        <View style={styles.card}>
+          <TouchableOpacity
+            testID="student-row-privacy"
+            style={styles.row}
+            activeOpacity={0.7}
+            onPress={() => router.push("/(auth)/privacy-policy")}
+          >
+            <View style={styles.rowIcon}>
+              <Feather name="shield" size={18} color={c.primary} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.rowLabel}>Privacy Policy</Text>
+            </View>
+            <Feather name="chevron-right" size={18} color={c.textSecondary} />
+          </TouchableOpacity>
+          <View style={styles.divider} />
+          <TouchableOpacity
+            testID="student-row-terms"
+            style={styles.row}
+            activeOpacity={0.7}
+            onPress={() => router.push("/(auth)/terms-and-conditions")}
+          >
+            <View style={styles.rowIcon}>
+              <Feather name="file-text" size={18} color={c.primary} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.rowLabel}>Terms &amp; Conditions</Text>
+            </View>
+            <Feather name="chevron-right" size={18} color={c.textSecondary} />
+          </TouchableOpacity>
+        </View>
+
+        {/* Contact Support */}
+        <Text style={styles.sectionLabel}>Support</Text>
+        <View style={styles.card}>
+          <TouchableOpacity
+            testID="student-row-contact-support"
+            style={styles.row}
+            activeOpacity={0.7}
+            onPress={() => Linking.openURL('mailto:elsewe.tech@gmail.com?subject=MessMate Support')}
+          >
+            <View style={styles.rowIcon}>
+              <Feather name="mail" size={18} color={c.primary} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.rowLabel}>Contact Support</Text>
+              <Text style={styles.rowValue}>elsewe.tech@gmail.com</Text>
+            </View>
+            <Feather name="chevron-right" size={18} color={c.textSecondary} />
+          </TouchableOpacity>
         </View>
 
         <Button

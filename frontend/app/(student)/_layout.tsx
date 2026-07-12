@@ -5,6 +5,7 @@ import React from "react";
 
 import { GlassTabBar, type TabIconMap } from "@/src/components/GlassTabBar";
 import { useTheme } from "@/src/theme";
+import { SubscriptionGuard } from "@/src/subscription/components/SubscriptionGuard";
 
 const icons: TabIconMap = {
   home: "home",
@@ -16,6 +17,7 @@ const icons: TabIconMap = {
 export default function StudentTabsLayout() {
   const { c } = useTheme();
   return (
+    <SubscriptionGuard role="student">
     <Tabs
       tabBar={(props) => <GlassTabBar {...props} icons={icons} />}
       screenOptions={{
@@ -28,5 +30,6 @@ export default function StudentTabsLayout() {
       <Tabs.Screen name="wastage" options={{ title: "Wastage" }} />
       <Tabs.Screen name="settings" options={{ title: "Settings" }} />
     </Tabs>
+    </SubscriptionGuard>
   );
 }

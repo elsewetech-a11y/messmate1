@@ -31,6 +31,7 @@ import { Segmented } from "@/src/components/Segmented";
 import { StatTile } from "@/src/components/StatTile";
 import { Toast } from "@/src/components/Toast";
 import { radius, shadow, spacing, typography, colors, useTheme, type ThemeColors } from "@/src/theme";
+import { SubscriptionGuard } from "@/src/subscription/components/SubscriptionGuard";
 
 type Range = "7" | "30" | "90";
 type MealFilter = "all" | MealType;
@@ -235,11 +236,13 @@ export default function AdminWastageCalc() {
 
   if (loading) {
     return (
+      <SubscriptionGuard role="admin">
       <SafeAreaView style={styles.safe} edges={["top"]}>
-        <View style={styles.center}>
+        <View style={[styles.center, { flex: 1 }]}>
           <ActivityIndicator color={c.primary} />
         </View>
       </SafeAreaView>
+      </SubscriptionGuard>
     );
   }
 
@@ -264,6 +267,7 @@ export default function AdminWastageCalc() {
     : null;
 
   return (
+    <SubscriptionGuard role="admin">
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <Toast
         testID="wcalc-toast"
@@ -474,6 +478,7 @@ export default function AdminWastageCalc() {
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
+    </SubscriptionGuard>
   );
 }
 

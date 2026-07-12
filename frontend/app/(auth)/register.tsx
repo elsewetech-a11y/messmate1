@@ -4,6 +4,7 @@
 import { Feather } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import React, { useMemo, useState } from "react";
+import { Linking } from "react-native";
 import {
   KeyboardAvoidingView,
   Platform,
@@ -142,6 +143,24 @@ export default function Register() {
               style={{ marginTop: spacing.md }}
             />
 
+            {/* Terms & Privacy notice */}
+            <View style={styles.legalRow}>
+              <Text style={styles.legalText}>By creating an account you agree to our{" "}</Text>
+              <TouchableOpacity
+                testID="register-terms-link"
+                onPress={() => router.push("/(auth)/terms-and-conditions")}
+              >
+                <Text style={styles.legalLink}>Terms</Text>
+              </TouchableOpacity>
+              <Text style={styles.legalText}>{" "}and{" "}</Text>
+              <TouchableOpacity
+                testID="register-privacy-link"
+                onPress={() => router.push("/(auth)/privacy-policy")}
+              >
+                <Text style={styles.legalLink}>Privacy Policy</Text>
+              </TouchableOpacity>
+            </View>
+
             <View style={styles.footer}>
               <Text style={styles.footerText}>Already have an account?</Text>
               <TouchableOpacity
@@ -168,7 +187,16 @@ const makeStyles = (c: ThemeColors) =>
     title: { ...typography.largeTitle, color: c.textPrimary, marginBottom: 6 },
     subtitle: { ...typography.callout, color: c.textSecondary, lineHeight: 22 },
     error: { color: c.danger, ...typography.subhead, marginTop: 4, marginBottom: 4 },
-    footer: { marginTop: spacing.md, flexDirection: "row", justifyContent: "center" },
+    legalRow: {
+      marginTop: spacing.md,
+      flexDirection: "row",
+      flexWrap: "wrap",
+      justifyContent: "center",
+      alignItems: "center",
+    },
+    legalText: { ...typography.footnote, color: c.textTertiary },
+    legalLink: { ...typography.footnote, color: c.primary, fontWeight: "600" },
+    footer: { marginTop: spacing.sm, flexDirection: "row", justifyContent: "center" },
     footerText: { ...typography.subhead, color: c.textSecondary },
     linkStrong: { ...typography.subhead, color: c.primary, fontWeight: "600" },
   });

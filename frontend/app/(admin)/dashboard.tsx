@@ -20,6 +20,9 @@ import { StatTile } from "@/src/components/StatTile";
 import { Toast } from "@/src/components/Toast";
 import { radius, shadow, spacing, typography, useTheme, type ThemeColors } from "@/src/theme";
 
+import { SubscriptionGuard } from "@/src/subscription/components/SubscriptionGuard";
+import { SubscriptionWidget } from "@/src/subscription/components/SubscriptionWidget";
+
 type ForDay = "today" | "tomorrow";
 
 const ICON: Record<MealType, keyof typeof Feather.glyphMap> = {
@@ -189,6 +192,7 @@ export default function AdminDashboard() {
   }, [data?.date]);
 
   return (
+    <SubscriptionGuard role="admin">
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <Toast
         testID="dash-toast"
@@ -209,8 +213,12 @@ export default function AdminDashboard() {
           />
         }
       >
+        <SubscriptionWidget />
+
         <View style={styles.header}>
-          <Text style={styles.eyebrow}>ADMIN</Text>
+          <View>
+            <Text style={styles.eyebrow}>{dateLabel}</Text>
+          </View>
           <Text style={styles.title}>
             {forDay === "today" ? "Today's cooking plan" : "Tomorrow's cooking plan"}
           </Text>
@@ -292,6 +300,7 @@ export default function AdminDashboard() {
         )}
       </ScrollView>
     </SafeAreaView>
+    </SubscriptionGuard>
   );
 }
 

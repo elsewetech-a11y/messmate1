@@ -74,6 +74,13 @@ function RoutingShell() {
               : { presentation: "modal", animation: "slide_from_bottom" }
           }
         />
+        <Stack.Screen
+          name="notification/[id]"
+          options={{
+            presentation: "modal",
+            animation: "slide_from_bottom"
+          }}
+        />
       </Stack>
     </>
   );

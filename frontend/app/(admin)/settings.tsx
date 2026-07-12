@@ -1,9 +1,11 @@
 // Admin Tab 5 — Settings (profile + defaults + logout)
 
 import { Feather } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
 import React, { useMemo, useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
+  Linking,
   ScrollView,
   StyleSheet,
   Switch,
@@ -26,7 +28,9 @@ export default function AdminSettings() {
   const { c } = useTheme();
   const styles = useMemo(() => makeStyles(c), [c]);
   const { user, token, logout } = useAuth();
+  const router = useRouter();
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [commPrefs, setCommPrefs] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [savingKey, setSavingKey] = useState<string | null>(null);
   const [toast, setToast] = useState<{
@@ -37,7 +41,19 @@ export default function AdminSettings() {
   const load = useCallback(async () => {
     if (!token) return;
     try {
-      setSettings(await api.adminSettings(token));
+      const [appSettings, subscription] = await Promise.all([
+        api.adminSettings(token),
+        api.getSubscriptionStatus(token)
+      ]);
+      setSettings(appSettings);
+      setCommPrefs(subscription?.communication_preferences || {
+        email_notifications: true,
+        push_notifications: true,
+        capacity_alerts: true,
+        renewal_reminders: true,
+        payment_confirmations: true,
+        invoice_emails: true,
+      });
     } catch (e: any) {
       setToast({ message: e?.message || "Failed to load settings", variant: "error" });
     } finally {
@@ -53,13 +69,25 @@ export default function AdminSettings() {
     if (!token) return;
     setSavingKey(key);
     try {
-      const next = await api.adminSettingsUpdate(token, patch);
-      setSettings(next);
+      await api.adminSettingsUpdate(token, patch);
+      setSettings((prev) => (prev ? { ...prev, ...patch } : null));
       setToast({ message: "Saved", variant: "success" });
     } catch (e: any) {
       setToast({ message: e?.message || "Save failed", variant: "error" });
     } finally {
       setSavingKey(null);
+    }
+  };
+
+  const updateCommPrefs = async (patch: any) => {
+    if (!token) return;
+    const newPrefs = { ...commPrefs, ...patch };
+    setCommPrefs(newPrefs);
+    try {
+      await api.updateCommunicationPreferences(token, newPrefs);
+      setToast({ message: "Preferences updated", variant: "success" });
+    } catch (e: any) {
+      setToast({ message: "Failed to update preferences", variant: "error" });
     }
   };
 
@@ -156,6 +184,25 @@ export default function AdminSettings() {
           />
         </View>
 
+        <Text style={styles.sectionLabel}>Subscription & Billing</Text>
+        <View style={styles.card}>
+          <TouchableOpacity
+            testID="admin-row-plan"
+            style={styles.row}
+            activeOpacity={0.7}
+            onPress={() => router.push("/(admin)/subscription")}
+          >
+            <View style={styles.rowIcon}>
+              <Feather name="credit-card" size={16} color={colors.primary} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.rowLabel}>Manage Plan</Text>
+              <Text style={styles.rowHelp}>Upgrade, renew, or view invoices.</Text>
+            </View>
+            <Feather name="chevron-right" size={16} color={c.textSecondary} />
+          </TouchableOpacity>
+        </View>
+
         <Text style={styles.sectionLabel}>Appearance</Text>
         <View style={styles.card}>
           <ThemeToggle />
@@ -165,17 +212,59 @@ export default function AdminSettings() {
         <View style={styles.card}>
           <View style={styles.switchRow}>
             <View style={{ flex: 1 }}>
-              <Text style={styles.rowLabel}>Notifications</Text>
+              <Text style={styles.rowLabel}>Push Notifications</Text>
               <Text style={styles.rowHelp}>
-                Will be implemented when push notifications are added.
+                Receive alerts on your device.
               </Text>
             </View>
             <Switch
-              testID="setting-notifications"
-              value={!!settings?.notifications_enabled}
-              onValueChange={(v) =>
-                update({ notifications_enabled: v }, "notifications")
-              }
+              value={!!commPrefs?.push_notifications}
+              onValueChange={(v) => updateCommPrefs({ push_notifications: v })}
+              trackColor={{ false: colors.inputBg, true: colors.primary }}
+            />
+          </View>
+          <View style={styles.divider} />
+          
+          <View style={styles.switchRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.rowLabel}>Email Notifications</Text>
+              <Text style={styles.rowHelp}>
+                Receive alerts via email.
+              </Text>
+            </View>
+            <Switch
+              value={!!commPrefs?.email_notifications}
+              onValueChange={(v) => updateCommPrefs({ email_notifications: v })}
+              trackColor={{ false: colors.inputBg, true: colors.primary }}
+            />
+          </View>
+          <View style={styles.divider} />
+          
+          <View style={styles.switchRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.rowLabel}>Capacity Alerts</Text>
+              <Text style={styles.rowHelp}>
+                Get warned when near student limit.
+              </Text>
+            </View>
+            <Switch
+              value={!!commPrefs?.capacity_alerts}
+              onValueChange={(v) => updateCommPrefs({ capacity_alerts: v })}
+              trackColor={{ false: colors.inputBg, true: colors.primary }}
+            />
+          </View>
+          <View style={styles.divider} />
+
+          <View style={styles.switchRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.rowLabel}>Renewal Reminders</Text>
+              <Text style={styles.rowHelp}>
+                Reminders before subscription expires.
+              </Text>
+            </View>
+            <Switch
+              value={!!commPrefs?.renewal_reminders}
+              onValueChange={(v) => updateCommPrefs({ renewal_reminders: v })}
               trackColor={{ false: colors.inputBg, true: colors.primary }}
             />
           </View>
@@ -188,6 +277,60 @@ export default function AdminSettings() {
               <Text style={styles.rowLabel}>Language</Text>
               <Text style={styles.rowHelp}>{settings?.language || "English"}</Text>
             </View>
+          </TouchableOpacity>
+        </View>
+
+        {/* Legal */}
+        <Text style={styles.sectionLabel}>Legal</Text>
+        <View style={styles.card}>
+          <TouchableOpacity
+            testID="admin-row-privacy"
+            style={styles.row}
+            activeOpacity={0.7}
+            onPress={() => router.push("/(auth)/privacy-policy")}
+          >
+            <View style={styles.rowIcon}>
+              <Feather name="shield" size={16} color={colors.primary} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.rowLabel}>Privacy Policy</Text>
+            </View>
+            <Feather name="chevron-right" size={16} color={c.textSecondary} />
+          </TouchableOpacity>
+          <View style={styles.divider} />
+          <TouchableOpacity
+            testID="admin-row-terms"
+            style={styles.row}
+            activeOpacity={0.7}
+            onPress={() => router.push("/(auth)/terms-and-conditions")}
+          >
+            <View style={styles.rowIcon}>
+              <Feather name="file-text" size={16} color={colors.primary} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.rowLabel}>Terms &amp; Conditions</Text>
+            </View>
+            <Feather name="chevron-right" size={16} color={c.textSecondary} />
+          </TouchableOpacity>
+        </View>
+
+        {/* Contact Support */}
+        <Text style={styles.sectionLabel}>Support</Text>
+        <View style={styles.card}>
+          <TouchableOpacity
+            testID="admin-row-contact-support"
+            style={styles.row}
+            activeOpacity={0.7}
+            onPress={() => Linking.openURL('mailto:elsewe.tech@gmail.com?subject=MessMate Support')}
+          >
+            <View style={styles.rowIcon}>
+              <Feather name="mail" size={16} color={colors.primary} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.rowLabel}>Contact Support</Text>
+              <Text style={styles.rowHelp}>elsewe.tech@gmail.com</Text>
+            </View>
+            <Feather name="chevron-right" size={16} color={c.textSecondary} />
           </TouchableOpacity>
         </View>
 

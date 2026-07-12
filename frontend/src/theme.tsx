@@ -36,6 +36,7 @@ const LIGHT = {
   success: "#16A34A",
   warning: "#F59E0B",
   danger: "#EF4444",
+  dangerTint: "rgba(239,68,68,0.12)",
   info: "#3B82F6",
   border: "rgba(0,0,0,0.06)",
   divider: "#E5E7EB",
@@ -72,6 +73,7 @@ const DARK: typeof LIGHT = {
   success: "#22C55E",
   warning: "#FBBF24",
   danger: "#F87171",
+  dangerTint: "rgba(248,113,113,0.18)",
   info: "#60A5FA",
   border: "rgba(255,255,255,0.08)",
   divider: "rgba(255,255,255,0.06)",
@@ -151,7 +153,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     (async () => {
-      const saved = await storage.getItem(THEME_KEY, "system");
+      const saved = await storage.getItem<string>(THEME_KEY, "system");
       if (saved === "light" || saved === "dark" || saved === "system") {
         setModeState(saved);
       }

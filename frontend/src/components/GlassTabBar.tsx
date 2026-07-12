@@ -23,19 +23,28 @@ export function GlassTabBar({
   icons,
 }: BottomTabBarProps & { icons: TabIconMap }) {
   const { c, isDark } = useTheme();
-  const tabCount = state.routes.length;
+  
+  const allowedTabs = ["students-status", "dashboard", "wastage-calc", "necessary-info", "settings"];
+  const visibleRoutes = state.routes.filter(
+    (route) => allowedTabs.includes(route.name)
+  );
+  const tabCount = visibleRoutes.length;
+  
   const [trackWidth, setTrackWidth] = useState(0);
   const pillX = useSharedValue(0);
   const scale = useSharedValue(1);
 
   // Animate the active pill into position with a tiny scale bounce.
   useEffect(() => {
-    pillX.value = withSpring(state.index, { damping: 18, stiffness: 200, mass: 0.6 });
+    const visibleIndex = visibleRoutes.findIndex((r) => r.key === state.routes[state.index]?.key);
+    const targetX = Math.max(0, visibleIndex);
+    pillX.value = withSpring(targetX, { damping: 18, stiffness: 200, mass: 0.6 });
     scale.value = withSpring(1.06, { damping: 14, stiffness: 220 });
     const t = setTimeout(() => {
       scale.value = withSpring(1, { damping: 18, stiffness: 220 });
     }, 120);
     return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.index, pillX, scale]);
 
   const pillWidth = trackWidth > 0 ? trackWidth / tabCount : 0;
@@ -94,13 +103,13 @@ export function GlassTabBar({
           ) : null}
         </View>
         <View style={styles.tabsRow}>
-          {state.routes.map((route, idx) => {
+          {visibleRoutes.map((route, visibleIdx) => {
             const { options } = descriptors[route.key];
             const label =
               (options.tabBarLabel as string) ||
               (options.title as string) ||
               route.name;
-            const isFocused = state.index === idx;
+            const isFocused = state.routes[state.index].key === route.key;
             const iconName = icons[route.name] || "circle";
 
             const onPress = () => {

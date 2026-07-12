@@ -2,6 +2,7 @@
 // custom answers per meal, and anonymous feedback. Saves into /api/student/today.
 
 import { Feather } from "@expo/vector-icons";
+import { useLocalSearchParams } from "expo-router";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
@@ -59,7 +60,8 @@ export default function StudentHome() {
   const { c } = useTheme();
   const styles = useMemo(() => makeStyles(c), [c]);
   const { token, user } = useAuth();
-  const [forDay, setForDay] = useState<ForDay>("today");
+  const { day } = useLocalSearchParams<{ day?: string }>();
+  const [forDay, setForDay] = useState<ForDay>(day === "tomorrow" ? "tomorrow" : "today");
   const [data, setData] = useState<TodayResponse | null>(null);
   const [reasons, setReasons] = useState<string[]>([]);
   const [breakfast, setBreakfast] = useState<MealPlan>(DEFAULT_PLAN);
@@ -139,6 +141,12 @@ export default function StudentHome() {
     setLoading(true);
     load();
   }, [load]);
+
+  useEffect(() => {
+    if (day === "tomorrow" || day === "today") {
+      setForDay(day);
+    }
+  }, [day]);
 
   const stateFor = (m: MealType) =>
     m === "breakfast" ? breakfast : m === "lunch" ? lunch : dinner;

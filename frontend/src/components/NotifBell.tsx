@@ -16,10 +16,16 @@ export function NotifBell({ testID = "notif-bell" }: { testID?: string }) {
   const [unread, setUnread] = useState(0);
 
   const fetchCount = useCallback(async () => {
-    if (!token || user?.role !== "student") return;
+    if (!token) return;
     try {
-      const res = await api.studentNotifications(token);
-      setUnread(res.unread_count);
+      if (user?.role === "student") {
+        const res = await api.studentNotifications(token);
+        setUnread(res.unread_count);
+      } else if (user?.role === "admin") {
+        const res = await api.getNotifications(token);
+        const unreadCount = res.filter(n => !n.read_status).length;
+        setUnread(unreadCount);
+      }
     } catch {
       /* silent */
     }
@@ -35,7 +41,7 @@ export function NotifBell({ testID = "notif-bell" }: { testID?: string }) {
     <TouchableOpacity
       testID={testID}
       activeOpacity={0.85}
-      onPress={() => router.push("/notifications")}
+      onPress={() => router.push(user?.role === "admin" ? "/(admin)/notifications" as any : "/notifications" as any)}
       style={[styles.btn, { backgroundColor: c.inputBg }]}
       hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
     >

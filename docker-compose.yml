@@ -1,0 +1,41 @@
+
+services:
+  backend:
+    build: 
+      context: ./backend
+    container_name: messmate_backend
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=development
+      - MONGO_URL=mongodb://mongodb:27017
+      - DB_NAME=messmate_dev
+      - JWT_SECRET=supersecret_dev_key_change_me
+      - JWT_ALGORITHM=HS256
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - mongodb
+      - redis
+    restart: unless-stopped
+
+  mongodb:
+    image: mongo:6.0
+    container_name: messmate_mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - messmate_mongo_data:/data/db
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: messmate_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - messmate_redis_data:/data
+    restart: unless-stopped
+
+volumes:
+  messmate_mongo_data:
+  messmate_redis_data:

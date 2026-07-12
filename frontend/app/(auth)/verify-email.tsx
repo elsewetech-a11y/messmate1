@@ -5,6 +5,7 @@ import { Feather } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import React, { useMemo, useState } from "react";
 import {
+  Alert,
   KeyboardAvoidingView,
   Platform,
   StyleSheet,
@@ -43,8 +44,16 @@ export default function VerifyEmailScreen() {
     setLoading(true);
     try {
       const resp = await api.verifyEmail({ email, otp: otpToUse });
-      await setSession(resp);
-      // Routing effect will redirect based on role/approval.
+      if ('access_token' in resp) {
+        await setSession(resp as any);
+        // Routing effect will redirect based on role/approval.
+      } else if (resp.status === 'pending_approval') {
+        Alert.alert(
+          "Registration Submitted",
+          "Your email is verified! Please wait for your hostel admin to approve your account before you can log in.",
+          [{ text: "OK", onPress: () => router.replace("/(auth)/student-login") }]
+        );
+      }
     } catch (e: any) {
       setError(e?.message || "Verification failed");
     } finally {

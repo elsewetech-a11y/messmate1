@@ -2140,8 +2140,7 @@ async def process_subscription_reminders():
 
             if days_remaining in schedule:
                 title = "Your MessMate Subscription Expires Soon"
-                desc = f"Your {
-                    plan_type.capitalize()} Subscription expires in {days_remaining} days. Renew now to avoid interruption."
+                desc = f"Your {plan_type.capitalize()} Subscription expires in {days_remaining} days. Renew now to avoid interruption."
                 await notify_institution(db, institution, "SUBSCRIPTION", title, desc, "SubscriptionExpiring", {"days": days_remaining, "institution": institution, "plan": plan_type})
 
     return {"success": True, "message": "Cron job completed"}

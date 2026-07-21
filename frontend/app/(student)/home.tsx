@@ -27,6 +27,7 @@ import { NotifBell } from "@/src/components/NotifBell";
 import { Toast } from "@/src/components/Toast";
 import { ToggleOnOff } from "@/src/components/ToggleOnOff";
 import { radius, shadow, spacing, typography, colors, useTheme, type ThemeColors } from "@/src/theme";
+import { formatHomeDate } from "@/src/utils/istDate";
 
 const DEFAULT_PLAN: MealPlan = {
   status: null,
@@ -35,11 +36,6 @@ const DEFAULT_PLAN: MealPlan = {
   custom_answer: null,
 };
 
-const DATE_FMT: Intl.DateTimeFormatOptions = {
-  weekday: "long",
-  day: "numeric",
-  month: "long",
-};
 
 const MEAL_TITLES: Record<MealType, string> = {
   breakfast: "Breakfast",
@@ -81,11 +77,7 @@ export default function StudentHome() {
 
   const dateLabel = useMemo(() => {
     if (!data?.date) return "";
-    try {
-      return new Date(data.date).toLocaleDateString(undefined, DATE_FMT);
-    } catch {
-      return data.date;
-    }
+    return formatHomeDate(data.date);
   }, [data?.date]);
 
   const load = useCallback(async () => {
@@ -524,7 +516,7 @@ export default function StudentHome() {
 const makeStyles = (c: ThemeColors) => StyleSheet.create({
   safe: { flex: 1, backgroundColor: c.bg },
   loadingWrap: { flex: 1, alignItems: "center", justifyContent: "center" },
-  content: { padding: spacing.lg, paddingBottom: spacing.xxl + 24 },
+  content: { padding: spacing.lg, paddingBottom: 120 },
 
   headerBlock: { marginBottom: spacing.lg },
   headerRow: { flexDirection: "row", alignItems: "flex-start" },

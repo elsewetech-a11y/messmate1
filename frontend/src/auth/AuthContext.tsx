@@ -157,7 +157,7 @@ export function useAuthRouting() {
         if (top !== "(student)") target = "/(student)/home";
       } else if (user.approval_status === "pending") {
         if (segments.join("/") !== "(auth)/pending") target = "/(auth)/pending";
-      } else if (user.approval_status === "rejected_or_blocked") {
+      } else if (user.approval_status === "blocked") {
         if (segments.join("/") !== "(auth)/blocked") target = "/(auth)/blocked";
       }
     }

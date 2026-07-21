@@ -3,6 +3,7 @@ import { StyleSheet, Text, View, TouchableOpacity } from "react-native";
 import { Feather } from "@expo/vector-icons";
 import { radius, spacing, typography, useTheme, type ThemeColors } from "@/src/theme";
 import type { InvoicePublic } from "@/src/api/client";
+import { formatISOasDateIST } from "@/src/utils/istDate";
 
 type InvoiceCardProps = {
   invoice: InvoicePublic;
@@ -21,7 +22,7 @@ export function InvoiceCard({ invoice, onDownload }: InvoiceCardProps) {
         </View>
         <View style={styles.titleContainer}>
           <Text style={styles.invoiceNumber}>{invoice.invoice_number}</Text>
-          <Text style={styles.date}>{new Date(invoice.created_at).toLocaleDateString()}</Text>
+          <Text style={styles.date}>{formatISOasDateIST(invoice.created_at)}</Text>
         </View>
         <View style={[styles.statusBadge, { backgroundColor: invoice.status === "Paid" ? c.success + "20" : c.warning + "20" }]}>
           <Text style={[styles.statusText, { color: invoice.status === "Paid" ? c.success : c.warning }]}>

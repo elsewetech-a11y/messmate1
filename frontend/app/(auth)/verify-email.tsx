@@ -70,6 +70,13 @@ export default function VerifyEmailScreen() {
       const r = await api.resendOtp({ email, purpose: "registration" });
       resetCooldown(r.resend_available_in || 60);
       setInfo("A new code has been sent to your email.");
+      if (r.dev_otp) {
+        if (Platform.OS === "web") {
+          window.alert(`[DEV MODE] Your OTP is: ${r.dev_otp}`);
+        } else {
+          Alert.alert("DEV MODE", `Your OTP is: ${r.dev_otp}`);
+        }
+      }
       setOtp("");
     } catch (e: any) {
       setError(e?.message || "Could not resend");

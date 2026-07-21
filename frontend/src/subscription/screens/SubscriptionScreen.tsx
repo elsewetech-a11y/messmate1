@@ -1,5 +1,6 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import { StyleSheet, ScrollView, View, Text, SafeAreaView, ActivityIndicator } from "react-native";
+import { PRICING_CONFIG } from "../constants/pricingConfig";
 import { Feather } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { useTheme, radius, shadow, spacing, typography, type ThemeColors } from "@/src/theme";
@@ -7,6 +8,7 @@ import { useSubscriptionCalculator } from "../hooks/useSubscriptionCalculator";
 import { useSubscription } from "../hooks/useSubscription";
 import { useAuth } from "@/src/auth/AuthContext";
 import { paymentService } from "../payment/services/paymentService";
+import { formatISOasDateIST } from "@/src/utils/istDate";
 import { Button } from "@/src/components/Button";
 
 import { PlanSelector } from "../components/PlanSelector";
@@ -20,6 +22,12 @@ export function SubscriptionScreen() {
   const router = useRouter();
   const { token, user } = useAuth();
 
+  const { subscription, loading: subLoading, refreshStatus } = useSubscription();
+
+  const dynamicMinStudents = useMemo(() => {
+    return Math.max(PRICING_CONFIG.MIN_STUDENTS, subscription?.registered_students || 0);
+  }, [subscription?.registered_students]);
+
   const {
     students,
     billingCycle,
@@ -32,13 +40,21 @@ export function SubscriptionScreen() {
     pricePerStudent,
     subscriptionDuration,
     subscriptionLabel,
-  } = useSubscriptionCalculator(500);
-
-  const { subscription, loading: subLoading, refreshStatus } = useSubscription();
+  } = useSubscriptionCalculator(500, dynamicMinStudents);
 
   const [paymentLoading, setPaymentLoading] = useState(false);
   const [paymentSuccess, setPaymentSuccess] = useState(false);
   const [paymentError, setPaymentError] = useState<string | null>(null);
+
+  const [initialized, setInitialized] = useState(false);
+
+  useEffect(() => {
+    if (subscription && !initialized) {
+      const initialCount = Math.max(subscription.registered_students, PRICING_CONFIG.MIN_STUDENTS);
+      handleStudentChange(initialCount);
+      setInitialized(true);
+    }
+  }, [subscription, initialized, handleStudentChange]);
 
   // Current status derived info
   const currentStatus = subscription?.status;
@@ -80,6 +96,7 @@ export function SubscriptionScreen() {
       setPaymentSuccess(true);
       await refreshStatus();
     } catch (err: any) {
+      console.error("[SubscriptionScreen] Payment flow error:", err);
       const errMsg = err.message || "Payment failed. Please try again.";
       if (currentOrderId) {
         paymentService
@@ -207,7 +224,7 @@ export function SubscriptionScreen() {
               <View style={styles.expiryInfo}>
                 <Feather name="calendar" size={12} color={c.textTertiary} />
                 <Text style={styles.expiryInfoText}>
-                  {isExpired ? "Expired" : "Expires"}: {new Date(subscription.expiry_date).toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" })}
+                  {isExpired ? "Expired" : "Expires"}: {formatISOasDateIST(subscription.expiry_date)}
                 </Text>
               </View>
             )}
@@ -223,6 +240,7 @@ export function SubscriptionScreen() {
         {/* ─── Student Slider + Input ────────── */}
         <StudentSlider
           students={students}
+          minStudents={dynamicMinStudents}
           onSliderChange={handleSliderChange}
           onInputChange={handleStudentChange}
           onInputBlur={handleInputBlur}

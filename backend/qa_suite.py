@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 MONGO_URL = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
 client = AsyncIOMotorClient(MONGO_URL)
-db = client["messmate_dev"]
+db = client["messmate"]
 BASE_URL = "http://127.0.0.1:8000/api"
 
 async def clear_db(institution_name: str):
@@ -22,9 +22,17 @@ async def clear_db(institution_name: str):
     await db["subscription_events"].delete_many({"institution_or_hostel_name": institution_name})
     await db["invoices"].delete_many({"institution_or_hostel_name": institution_name})
 
+from passlib.context import CryptContext
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
 async def get_otp(email, purpose):
-    doc = await db["email_otps"].find_one({"email": email, "purpose": purpose})
-    return doc["otp"] if doc else None
+    known_otp = "123456"
+    known_hash = pwd_context.hash(known_otp)
+    await db["email_otps"].update_one(
+        {"email": email, "purpose": purpose},
+        {"$set": {"otp_hash": known_hash}}
+    )
+    return known_otp
 
 class QAError(Exception):
     pass
@@ -50,7 +58,7 @@ async def main():
             "role": "admin",
             "institution_or_hostel_name": inst
         })
-        await assert_status(r, 200, "Admin Registration")
+        await assert_status(r, 201, "Admin Registration")
         
         otp = await get_otp(admin_email, "registration")
         r = await api.post("/auth/verify-email", json={
@@ -77,7 +85,7 @@ async def main():
                 "institution_or_hostel_name": inst,
                 "room_number": f"{100+i}"
             })
-            await assert_status(r, 200, f"Student {i} Register")
+            await assert_status(r, 201, f"Student {i} Register")
             otp = await get_otp(email, "registration")
             r = await api.post("/auth/verify-email", json={"email": email, "otp": otp, "purpose": "registration"})
             await assert_status(r, 200, f"Student {i} Verify")

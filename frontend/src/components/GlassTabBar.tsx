@@ -24,10 +24,12 @@ export function GlassTabBar({
 }: BottomTabBarProps & { icons: TabIconMap }) {
   const { c, isDark } = useTheme();
   
-  const allowedTabs = ["students-status", "dashboard", "wastage-calc", "necessary-info", "settings"];
-  const visibleRoutes = state.routes.filter(
-    (route) => allowedTabs.includes(route.name)
-  );
+  const visibleRoutes = state.routes.filter((route) => {
+    const { options } = descriptors[route.key];
+    if ((options as any).href === null) return false;
+    if (!icons[route.name]) return false;
+    return true;
+  });
   const tabCount = visibleRoutes.length;
   
   const [trackWidth, setTrackWidth] = useState(0);

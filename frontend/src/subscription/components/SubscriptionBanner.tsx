@@ -1,8 +1,9 @@
 import React from "react";
 import { StyleSheet, View, Text, TouchableOpacity } from "react-native";
 import { useRouter } from "expo-router";
-import { typography, useTheme, type ThemeColors } from "@/src/theme";
+import { typography, useTheme } from "@/src/theme";
 import { useSubscription } from "../hooks/useSubscription";
+import { formatISOasDateIST } from "@/src/utils/istDate";
 
 export function SubscriptionBanner() {
   const { c } = useTheme();
@@ -12,49 +13,96 @@ export function SubscriptionBanner() {
   if (isLoading || !status) return null;
 
   const days = status.days_remaining;
-  
-  // Hide the banner completely for new trial users (let email reminders do the job)
-  if (status.is_trial && days > 3) {
-    return null;
-  }
-
-  // Don't show banner to non-admin roles
-  const planName = status.is_trial ? "Free Trial" : "Premium"; // Ideally plan_type is passed
+  const isTrial = status.is_trial;
 
   let bgColor = c.success;
-  let label = "Subscription Active";
+  let content = null;
 
-  if (days < 0 || status.status === "SUBSCRIPTION_EXPIRED" || status.status === "TRIAL_EXPIRED") {
-    bgColor = c.danger;
-    label = "Subscription Expired - Renew Immediately";
-  } else if (days < 7) {
-    bgColor = c.warning; // Orange equivalent if possible, using warning for now
-    label = "Renew Now";
-  } else if (days <= 30) {
-    bgColor = "#EAB308"; // Yellow
-    label = "Subscription Expiring Soon";
+  if (isTrial) {
+    if (days < 0 || status.status === "TRIAL_EXPIRED") {
+      bgColor = c.danger;
+      content = (
+        <View style={styles.infoGroup}>
+          <Text style={styles.textBold}>Free Trial Expired.</Text>
+        </View>
+      );
+    } else {
+      let daysText = "";
+      if (days === 0) {
+        bgColor = c.danger;
+        daysText = "Today is the last day of the free trial.";
+      } else if (days <= 2) {
+        bgColor = c.warning;
+        daysText = "Trial is about to expire.";
+      } else if (days <= 5) {
+        bgColor = "#EAB308"; // Stronger reminder color
+        daysText = `${days} Days Left`;
+      } else {
+        bgColor = c.success;
+        daysText = `${days} Days Left`;
+      }
+
+      const endDateStr = status.expiry_date 
+        ? formatISOasDateIST(status.expiry_date)
+        : "";
+
+      content = (
+        <View style={styles.infoGroup}>
+          <Text style={styles.textBold}>Free Trial Active</Text>
+          <Text style={styles.textSeparator}>•</Text>
+          <Text style={styles.textBold}>{daysText}</Text>
+          {endDateStr ? (
+            <>
+              <Text style={styles.textSeparator}>•</Text>
+              <Text style={styles.text}>Ends {endDateStr}</Text>
+            </>
+          ) : null}
+        </View>
+      );
+    }
   } else {
-    bgColor = c.success;
-    label = "Subscription Active";
+    // Paid subscription
+    if (days < 0 || status.status === "SUBSCRIPTION_EXPIRED") {
+      bgColor = c.danger;
+      content = (
+        <View style={styles.infoGroup}>
+          <Text style={styles.textBold}>Subscription Expired</Text>
+        </View>
+      );
+    } else {
+      bgColor = c.success;
+      const endDateStr = status.expiry_date 
+        ? formatISOasDateIST(status.expiry_date)
+        : "";
+      content = (
+        <View style={styles.infoGroup}>
+          <Text style={styles.textBold}>Current Plan: {status.plan_type?.toUpperCase() || "PREMIUM"}</Text>
+          <Text style={styles.textSeparator}>•</Text>
+          <Text style={styles.text}>{days} Days Remaining</Text>
+          {endDateStr ? (
+            <>
+              <Text style={styles.textSeparator}>•</Text>
+              <Text style={styles.text}>Ends {endDateStr}</Text>
+            </>
+          ) : null}
+          <Text style={styles.textSeparator}>•</Text>
+          <Text style={styles.text}>Status: Active</Text>
+        </View>
+      );
+    }
   }
 
   return (
     <View style={[styles.banner, { backgroundColor: bgColor }]}>
       <View style={styles.content}>
-        <View style={styles.infoGroup}>
-          <Text style={styles.textBold}>{planName}</Text>
-          <Text style={styles.textSeparator}>•</Text>
-          <Text style={styles.text}>{status.student_limit} Students</Text>
-          <Text style={styles.textSeparator}>•</Text>
-          <Text style={styles.textBold}>
-            {days > 0 ? `${days} Days Remaining` : "Expired"}
-          </Text>
-        </View>
+        {content}
         <TouchableOpacity 
           style={styles.renewBtn} 
           onPress={() => router.push("/(admin)/subscription" as any)}
         >
-          <Text style={[styles.renewText, { color: bgColor }]}>Renew</Text>
+          <Text style={[styles.renewText, { color: bgColor }]}>
+            {(days < 0 || status.status.includes("EXPIRED")) ? "Subscribe Now" : "Manage Plan"}
+          </Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -64,7 +112,7 @@ export function SubscriptionBanner() {
 const styles = StyleSheet.create({
   banner: {
     width: "100%",
-    paddingVertical: 8,
+    paddingVertical: 10,
     paddingHorizontal: 16,
     zIndex: 50,
   },
@@ -96,12 +144,11 @@ const styles = StyleSheet.create({
   renewBtn: {
     backgroundColor: "#FFFFFF",
     paddingHorizontal: 12,
-    paddingVertical: 4,
+    paddingVertical: 6,
     borderRadius: 12,
-    marginLeft: 8,
   },
   renewText: {
     ...typography.caption,
-    fontWeight: "800",
-  },
+    fontWeight: "700",
+  }
 });

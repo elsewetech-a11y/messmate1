@@ -4,8 +4,8 @@
 import { Feather } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import React, { useMemo, useState } from "react";
-import { Linking } from "react-native";
 import {
+  Alert,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -14,6 +14,9 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+
+
+
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { api } from "@/src/api/client";
@@ -37,6 +40,13 @@ export default function Register() {
   const [hostel, setHostel] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
+  
+  const [department, setDepartment] = useState("");
+  const [academicYear, setAcademicYear] = useState("");
+  const [rollNumber, setRollNumber] = useState("");
+  const [roomNumber, setRoomNumber] = useState("");
+
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -45,6 +55,23 @@ export default function Register() {
     if (!fullName.trim() || !email.trim() || !hostel.trim() || !password) {
       setError("Please fill in all fields.");
       return;
+    }
+    if (role === "student") {
+      if (!department.trim()) {
+        setError("Please enter your Department.");
+        return;
+      }
+      if (!academicYear.trim()) {
+        setError("Please enter your Academic Year.");
+        return;
+      }
+      const trimmedYr = academicYear.trim();
+      const validText = ["First Year", "Second Year", "Third Year", "Fourth Year", "Final Year"].includes(trimmedYr);
+      const isNum = /^[1-9]\d*$/.test(trimmedYr);
+      if (!validText && !isNum) {
+        setError("Academic Year must be a positive whole number or a valid year name (e.g., First Year).");
+        return;
+      }
     }
     if (!validEmail(email)) {
       setError("Please enter a valid email address.");
@@ -61,14 +88,26 @@ export default function Register() {
 
     setLoading(true);
     try {
-      await api.register({
+      const res = await api.register({
         full_name: fullName.trim(),
         email: email.trim(),
         password,
         confirm_password: confirm,
         institution_or_hostel_name: hostel.trim(),
         role,
+        department: role === "student" ? department.trim() : undefined,
+        academic_year: role === "student" ? academicYear.trim() : undefined,
+        roll_number: role === "student" ? rollNumber.trim() : undefined,
+        room_number: role === "student" ? roomNumber.trim() || undefined : undefined,
       });
+      if (res.dev_otp) {
+        // Show an alert on both mobile and web if in dev mode
+        if (Platform.OS === "web") {
+          window.alert(`[DEV MODE] Your OTP is: ${res.dev_otp}`);
+        } else {
+          Alert.alert("DEV MODE", `Your OTP is: ${res.dev_otp}`);
+        }
+      }
       router.replace({
         pathname: "/(auth)/verify-email",
         params: { email: email.trim(), from: "register" },
@@ -128,6 +167,46 @@ export default function Register() {
               onChangeText={setHostel}
               autoCapitalize="words"
             />
+            {role === "student" && (
+              <>
+                <Input
+                  label="Department *"
+                  placeholder="e.g., Computer Science and Engineering"
+                  value={department}
+                  onChangeText={(text) => {
+                    // Allow letters, numbers, spaces, hyphens, ampersands, periods, parentheses
+                    if (/^[A-Za-z0-9 .&()\-]*$/.test(text) && text.length <= 100) {
+                      setDepartment(text);
+                    }
+                  }}
+                  autoCapitalize="words"
+                  maxLength={100}
+                />
+                <Input
+                  label="Academic Year *"
+                  placeholder="e.g., 1 or First Year"
+                  value={academicYear}
+                  onChangeText={setAcademicYear}
+                />
+                <Input
+                  label="Roll Number (Optional)"
+                  placeholder="e.g., CS2023001"
+                  value={rollNumber}
+                  onChangeText={setRollNumber}
+                  autoCapitalize="characters"
+                />
+                <Input
+                  label="Room Number (Optional)"
+                  placeholder="e.g., A-101, B203, G-12"
+                  value={roomNumber}
+                  onChangeText={(text) => {
+                    if (text.length <= 20) setRoomNumber(text);
+                  }}
+                  autoCapitalize="characters"
+                  maxLength={20}
+                />
+              </>
+            )}
             <Input testID="register-password-input" label="Password" placeholder="At least 6 characters" value={password} onChangeText={setPassword} secureTextEntry />
             <Input testID="register-confirm-input" label="Confirm password" placeholder="Re-enter your password" value={confirm} onChangeText={setConfirm} secureTextEntry />
 
@@ -175,6 +254,9 @@ export default function Register() {
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
+
+
+
     </SafeAreaView>
   );
 }
@@ -199,4 +281,5 @@ const makeStyles = (c: ThemeColors) =>
     footer: { marginTop: spacing.sm, flexDirection: "row", justifyContent: "center" },
     footerText: { ...typography.subhead, color: c.textSecondary },
     linkStrong: { ...typography.subhead, color: c.primary, fontWeight: "600" },
+
   });

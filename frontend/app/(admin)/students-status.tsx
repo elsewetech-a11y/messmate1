@@ -14,6 +14,7 @@ import {
   View,
   Modal,
   TextInput,
+  Alert
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -32,6 +33,7 @@ import { StatTile } from "@/src/components/StatTile";
 import { Toast } from "@/src/components/Toast";
 import { radius, shadow, spacing, typography, colors, useTheme, type ThemeColors } from "@/src/theme";
 import { SubscriptionGuard } from "@/src/subscription/components/SubscriptionGuard";
+import { formatDateIST } from "@/src/utils/istDate";
 
 const MEAL_ICON: Record<MealType, keyof typeof Feather.glyphMap> = {
   breakfast: "coffee",
@@ -69,6 +71,48 @@ export default function AdminStudentsStatus() {
   const [notifBody, setNotifBody] = useState("Please open the app and submit your Tomorrow's Plan before today's deadline.");
   const [sendingNotif, setSendingNotif] = useState(false);
 
+  // Modal List State
+  const [activeList, setActiveList] = useState<"all" | "pending" | "approved" | "blocked" | null>(null);
+  const [listData, setListData] = useState<StudentRow[]>([]);
+  const [listLoading, setListLoading] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [detailsStudent, setDetailsStudent] = useState<StudentRow | null>(null);
+
+  const fetchList = async (status: "all" | "pending" | "approved" | "blocked") => {
+    if (!token) return;
+    setActiveList(status);
+    setListLoading(true);
+    try {
+      const res = await api.adminStudentsList(token, status);
+      setListData(res.students);
+    } catch (e: any) {
+      setToast({ message: e?.message || "Failed to load students", variant: "error" });
+    } finally {
+      setListLoading(false);
+    }
+  };
+
+  const filteredListData = useMemo(() => {
+    if (!searchQuery.trim()) return listData;
+    const q = searchQuery.trim().toLowerCase();
+    return listData.filter((s) => {
+      const dept = ((s as any).department || "").toLowerCase();
+      const year = ((s as any).academic_year || "").toLowerCase();
+      const roll = ((s as any).roll_number || "").toLowerCase();
+      const room = ((s as any).room_number || "").toLowerCase();
+      return (
+        s.full_name.toLowerCase().includes(q) ||
+        (s.email || "").toLowerCase().includes(q) ||
+        (s.mobile_or_user_id || "").toLowerCase().includes(q) ||
+        dept.includes(q) ||
+        year.includes(q) ||
+        roll.includes(q) ||
+        room.includes(q) ||
+        s.approval_status.toLowerCase().includes(q)
+      );
+    });
+  }, [listData, searchQuery]);
+
   const onSendNotification = async () => {
     if (!token) return;
     if (!notifTitle.trim() || !notifBody.trim()) {
@@ -77,11 +121,9 @@ export default function AdminStudentsStatus() {
     }
     setSendingNotif(true);
     try {
-      await api.adminCreateNotification(token, {
+      await api.adminPushImmediate(token, {
         title: notifTitle.trim(),
-        body: notifBody.trim(),
-        audience: "student",
-        action_url: "/(student)/home?day=tomorrow",
+        message: notifBody.trim(),
       });
       setShowNotifModal(false);
       setToast({ message: "Notification sent!", variant: "success" });
@@ -123,11 +165,15 @@ export default function AdminStudentsStatus() {
     try {
       const res = await api.adminApprove(token, id);
       if (res.status === "pending_capacity") {
-        setToast({ message: "Capacity reached. Added to Pending Queue.", variant: "info" });
+        setToast({ message: res.message || "You have reached your maximum subscribed student limit. Please upgrade your subscription to add more students.", variant: "info" });
+        setTimeout(() => {
+          router.push("/(admin)/subscription" as any);
+        }, 1500);
       } else {
         setToast({ message: "Student approved", variant: "success" });
       }
       await load();
+      if (activeList) fetchList(activeList);
     } catch (e: any) {
       setToast({ message: e?.message || "Failed", variant: "error" });
     } finally {
@@ -142,11 +188,52 @@ export default function AdminStudentsStatus() {
       await api.adminReject(token, id);
       setToast({ message: "Student rejected", variant: "info" });
       await load();
+      if (activeList) fetchList(activeList);
     } catch (e: any) {
       setToast({ message: e?.message || "Failed", variant: "error" });
     } finally {
       setActing(null);
     }
+  };
+
+
+  const onBlock = async (id: string) => {
+    if (!token) return;
+    setActing(id);
+    try {
+      await api.adminBlock(token, id);
+      setToast({ message: "Student blocked", variant: "info" });
+      load();
+      if (activeList) fetchList(activeList);
+    } catch (e: any) {
+      setToast({ message: e?.message || "Failed", variant: "error" });
+    } finally {
+      setActing(null);
+    }
+  };
+
+  const onRemove = (id: string) => {
+    if (!token) return;
+    Alert.alert("Remove Student", "Are you sure you want to completely remove this student from your institution?", [
+      { text: "Cancel", style: "cancel" },
+      { 
+        text: "Remove", 
+        style: "destructive", 
+        onPress: async () => {
+          setActing(id);
+          try {
+            await api.adminRemove(token, id);
+            setToast({ message: "Student removed", variant: "info" });
+            load();
+            if (activeList) fetchList(activeList);
+          } catch (e: any) {
+            setToast({ message: e?.message || "Failed", variant: "error" });
+          } finally {
+            setActing(null);
+          }
+        }
+      }
+    ]);
   };
 
   const meal: MealStat | null = useMemo(() => {
@@ -169,6 +256,205 @@ export default function AdminStudentsStatus() {
   return (
     <SubscriptionGuard role="admin">
     <SafeAreaView style={styles.safe} edges={["top"]}>
+
+      {/* Student List Modal */}
+      <Modal visible={activeList !== null} transparent animationType="slide" onRequestClose={() => setActiveList(null)}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { flex: 1, marginTop: 40 }]}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>{activeList ? cap(activeList) : ""} Students</Text>
+              <TouchableOpacity onPress={() => { setActiveList(null); setSearchQuery(""); }}>
+                <Feather name="x" size={24} color={c.textPrimary} />
+              </TouchableOpacity>
+            </View>
+
+            {/* Search bar */}
+            <View style={styles.searchBar}>
+              <Feather name="search" size={16} color={c.textTertiary} style={{ marginRight: 8 }} />
+              <TextInput
+                style={styles.searchInput}
+                placeholder="Search by name, email, dept, roll..."
+                placeholderTextColor={c.textTertiary}
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+                autoCapitalize="none"
+                clearButtonMode="while-editing"
+              />
+            </View>
+            
+            {listLoading ? (
+              <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
+                <ActivityIndicator color={c.primary} />
+              </View>
+            ) : (
+              <ScrollView contentContainerStyle={{ gap: spacing.md, paddingBottom: 40 }}>
+                {filteredListData.length === 0 ? (
+                  <View style={styles.card}>
+                    <Text style={styles.muted}>{searchQuery ? "No students match your search." : "No students found in this category."}</Text>
+                  </View>
+                ) : (
+                  filteredListData.map((s) => {
+                     const isPendingCapacity = (s as any).approval_status === "pending_capacity";
+                     return (
+                    <View key={s.id} style={[styles.studentCard, isPendingCapacity && { borderColor: c.warning, borderWidth: 1 }]}>
+                      <View style={styles.studentRow}>
+                        <View style={styles.avatar}>
+                          <Text style={styles.avatarLetter}>
+                            {(s.full_name[0] || "?").toUpperCase()}
+                          </Text>
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.studentName}>{s.full_name}</Text>
+                          <Text style={styles.studentMeta}>
+                            {s.email || s.mobile_or_user_id}
+                          </Text>
+                          {(s as any).department ? (
+                            <Text style={styles.studentMeta}>{(s as any).department}</Text>
+                          ) : null}
+                          {(s as any).academic_year ? (
+                            <Text style={styles.studentMeta}>Year: {(s as any).academic_year}</Text>
+                          ) : null}
+                          {(s as any).roll_number ? (
+                            <Text style={styles.studentMeta}>Roll: {(s as any).roll_number}</Text>
+                          ) : null}
+                          {(s as any).room_number ? (
+                            <Text style={styles.studentMeta}>Room: {(s as any).room_number}</Text>
+                          ) : null}
+                          <Text style={[styles.studentMeta, { fontWeight: "600", marginTop: 4, color: s.approval_status === "approved" ? c.success : s.approval_status === "blocked" ? c.danger : c.warning }]}>
+                            {cap(s.approval_status)}
+                          </Text>
+                          {isPendingCapacity && (
+                            <Text style={[styles.studentMeta, { color: c.warning, marginTop: 4, fontWeight: "500" }]}>
+                                Reason: Institution has reached its purchased student capacity.
+                            </Text>
+                          )}
+                        </View>
+                      </View>
+                      <View style={styles.actionRow}>
+                        {(activeList === "all" || activeList === "approved") && (
+                          <>
+                            <TouchableOpacity
+                              activeOpacity={0.85}
+                              style={[styles.actBtn, { backgroundColor: c.inputBg }]}
+                              onPress={() => setDetailsStudent(s)}
+                            >
+                              <Feather name="info" size={16} color={c.primary} />
+                              <Text style={[styles.actBtnText, { color: c.primary }]}>Details</Text>
+                            </TouchableOpacity>
+                            {s.approval_status === "approved" && (
+                              <TouchableOpacity
+                                activeOpacity={0.85}
+                                style={[styles.actBtn, { backgroundColor: c.inputBg }]}
+                                onPress={() => onBlock(s.id)}
+                                disabled={acting === s.id}
+                              >
+                                <Feather name="slash" size={16} color={c.danger} />
+                                <Text style={[styles.actBtnText, { color: c.danger }]}>Block</Text>
+                              </TouchableOpacity>
+                            )}
+                            <TouchableOpacity
+                              activeOpacity={0.85}
+                              style={[styles.actBtn, { backgroundColor: c.inputBg }]}
+                              onPress={() => onRemove(s.id)}
+                              disabled={acting === s.id}
+                            >
+                              <Feather name="trash-2" size={16} color={c.danger} />
+                              <Text style={[styles.actBtnText, { color: c.danger }]}>Remove</Text>
+                            </TouchableOpacity>
+                          </>
+                        )}
+                        {activeList === "pending" && (
+                          <>
+                            <TouchableOpacity
+                              activeOpacity={0.85}
+                              style={[styles.actBtn, { backgroundColor: c.inputBg }]}
+                              onPress={() => setDetailsStudent(s)}
+                            >
+                              <Feather name="info" size={16} color={c.primary} />
+                              <Text style={[styles.actBtnText, { color: c.primary }]}>Details</Text>
+                            </TouchableOpacity>
+                            {isPendingCapacity ? (
+                                <TouchableOpacity
+                                testID={`upgrade-${s.id}`}
+                                activeOpacity={0.85}
+                                style={[styles.actBtn, { backgroundColor: c.warning }]}
+                                onPress={() => router.push("/(admin)/subscription" as any)}
+                                >
+                                <Feather name="arrow-up-circle" size={16} color="#fff" />
+                                <Text style={styles.actBtnText}>Approve After Upgrade</Text>
+                                </TouchableOpacity>
+                            ) : (
+                                <TouchableOpacity
+                                activeOpacity={0.85}
+                                style={[styles.actBtn, { backgroundColor: c.primary }]}
+                                onPress={() => onApprove(s.id)}
+                                disabled={acting === s.id}
+                                >
+                                <Feather name="check" size={16} color="#fff" />
+                                <Text style={styles.actBtnText}>Approve</Text>
+                                </TouchableOpacity>
+                            )}
+                            <TouchableOpacity
+                              activeOpacity={0.85}
+                              style={[styles.actBtn, { backgroundColor: c.inputBg }]}
+                              onPress={() => onReject(s.id)}
+                              disabled={acting === s.id}
+                            >
+                              <Feather name="x" size={16} color={c.danger} />
+                              <Text style={[styles.actBtnText, { color: c.danger }]}>Reject</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                              activeOpacity={0.85}
+                              style={[styles.actBtn, { backgroundColor: c.inputBg }]}
+                              onPress={() => onRemove(s.id)}
+                              disabled={acting === s.id}
+                            >
+                              <Feather name="trash-2" size={16} color={c.danger} />
+                              <Text style={[styles.actBtnText, { color: c.danger }]}>Remove</Text>
+                            </TouchableOpacity>
+                          </>
+                        )}
+                        {activeList === "blocked" && (
+                          <>
+                            <TouchableOpacity
+                              activeOpacity={0.85}
+                              style={[styles.actBtn, { backgroundColor: c.inputBg }]}
+                              onPress={() => setDetailsStudent(s)}
+                            >
+                              <Feather name="info" size={16} color={c.primary} />
+                              <Text style={[styles.actBtnText, { color: c.primary }]}>Details</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                              activeOpacity={0.85}
+                              style={[styles.actBtn, { backgroundColor: c.primary }]}
+                              onPress={() => onApprove(s.id)}
+                              disabled={acting === s.id}
+                            >
+                              <Feather name="check" size={16} color="#fff" />
+                              <Text style={styles.actBtnText}>Unblock</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                              activeOpacity={0.85}
+                              style={[styles.actBtn, { backgroundColor: c.inputBg }]}
+                              onPress={() => onRemove(s.id)}
+                              disabled={acting === s.id}
+                            >
+                              <Feather name="trash-2" size={16} color={c.danger} />
+                              <Text style={[styles.actBtnText, { color: c.danger }]}>Remove</Text>
+                            </TouchableOpacity>
+                          </>
+                        )}
+                      </View>
+                    </View>
+                  );
+                })
+              )}
+              </ScrollView>
+            )}
+          </View>
+        </View>
+      </Modal>
+
       <Toast
         testID="admin-status-toast"
         message={toast?.message ?? null}
@@ -193,7 +479,7 @@ export default function AdminStudentsStatus() {
             <Text style={styles.eyebrow}>ADMIN</Text>
             <Text style={styles.title}>Students Status</Text>
             <Text style={styles.subtitle}>
-              Approvals, eating intent, preferences, reactions, reasons & feedback.
+              Approvals, eating intent, preferences, reactions, reasons &amp; feedback.
             </Text>
           </View>
           <TouchableOpacity
@@ -207,33 +493,41 @@ export default function AdminStudentsStatus() {
 
         {/* Summary tiles */}
         <View style={styles.tilesGrid}>
-          <StatTile
-            testID="tile-total"
-            icon="users"
-            label="Total students"
-            value={summary?.total_students ?? 0}
-          />
-          <StatTile
-            testID="tile-approved"
-            icon="check-circle"
-            label="Approved"
-            tone="success"
-            value={summary?.approved ?? 0}
-          />
-          <StatTile
-            testID="tile-pending"
-            icon="clock"
-            label="Pending"
-            tone="warning"
-            value={summary?.pending ?? 0}
-          />
-          <StatTile
-            testID="tile-blocked"
-            icon="x-octagon"
-            label="Blocked"
-            tone="danger"
-            value={summary?.blocked ?? 0}
-          />
+          <TouchableOpacity activeOpacity={0.8} onPress={() => fetchList("all")} style={{flex: 1}}>
+            <StatTile
+              testID="tile-total"
+              icon="users"
+              label="Total students"
+              value={summary?.total_students ?? 0}
+            />
+          </TouchableOpacity>
+          <TouchableOpacity activeOpacity={0.8} onPress={() => fetchList("approved")} style={{flex: 1}}>
+            <StatTile
+              testID="tile-approved"
+              icon="check-circle"
+              label="Approved"
+              tone="success"
+              value={summary?.approved ?? 0}
+            />
+          </TouchableOpacity>
+          <TouchableOpacity activeOpacity={0.8} onPress={() => fetchList("pending")} style={{flex: 1}}>
+            <StatTile
+              testID="tile-pending"
+              icon="clock"
+              label="Pending"
+              tone="warning"
+              value={summary?.pending ?? 0}
+            />
+          </TouchableOpacity>
+          <TouchableOpacity activeOpacity={0.8} onPress={() => fetchList("blocked")} style={{flex: 1}}>
+            <StatTile
+              testID="tile-blocked"
+              icon="x-octagon"
+              label="Blocked"
+              tone="danger"
+              value={summary?.blocked ?? 0}
+            />
+          </TouchableOpacity>
         </View>
 
         {/* Pending approvals */}
@@ -258,6 +552,18 @@ export default function AdminStudentsStatus() {
                     <Text style={styles.studentMeta}>
                       {s.email || s.mobile_or_user_id}
                     </Text>
+                    {(s as any).department ? (
+                      <Text style={styles.studentMeta}>{(s as any).department}</Text>
+                    ) : null}
+                    {(s as any).academic_year ? (
+                      <Text style={styles.studentMeta}>Year: {(s as any).academic_year}</Text>
+                    ) : null}
+                    {(s as any).roll_number ? (
+                      <Text style={styles.studentMeta}>Roll: {(s as any).roll_number}</Text>
+                    ) : null}
+                    {(s as any).room_number ? (
+                      <Text style={styles.studentMeta}>Room: {(s as any).room_number}</Text>
+                    ) : null}
                     <Text style={styles.studentMeta}>{s.institution_or_hostel_name}</Text>
                     {isPendingCapacity && (
                       <Text style={[styles.studentMeta, { color: c.warning, marginTop: 4, fontWeight: "500" }]}>
@@ -544,6 +850,56 @@ export default function AdminStudentsStatus() {
           </View>
         </View>
       </Modal>
+
+      {/* View Details Modal */}
+      <Modal visible={detailsStudent !== null} transparent animationType="fade" onRequestClose={() => setDetailsStudent(null)}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { maxHeight: "85%" }]}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Student Details</Text>
+              <TouchableOpacity onPress={() => setDetailsStudent(null)} hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}>
+                <Feather name="x" size={24} color={c.textSecondary} />
+              </TouchableOpacity>
+            </View>
+            {detailsStudent && (
+              <ScrollView showsVerticalScrollIndicator={false}>
+                <View style={styles.detailsAvatarRow}>
+                  <View style={styles.detailsAvatar}>
+                    <Text style={styles.detailsAvatarLetter}>{(detailsStudent.full_name[0] || "?").toUpperCase()}</Text>
+                  </View>
+                  <Text style={styles.detailsName}>{detailsStudent.full_name}</Text>
+                </View>
+
+                <View style={styles.detailsCard}>
+                  {[
+                    { label: "Email", value: detailsStudent.email || "—", icon: "mail" as const },
+                    { label: "Mobile", value: detailsStudent.mobile_or_user_id || "—", icon: "phone" as const },
+                    { label: "Institution", value: detailsStudent.institution_or_hostel_name, icon: "home" as const },
+                    { label: "Department", value: (detailsStudent as any).department || "—", icon: "book" as const },
+                    { label: "Academic Year", value: (detailsStudent as any).academic_year || "—", icon: "calendar" as const },
+                    { label: "Roll Number", value: (detailsStudent as any).roll_number || "—", icon: "hash" as const },
+                    { label: "Room Number", value: (detailsStudent as any).room_number || "—", icon: "map-pin" as const },
+                    { label: "Registered", value: detailsStudent.created_at ? formatDateIST(new Date(detailsStudent.created_at)) : "—", icon: "clock" as const },
+                    { label: "Approval Status", value: cap(detailsStudent.approval_status), icon: "check-circle" as const },
+                  ].map((row, idx, arr) => (
+                    <View key={row.label}>
+                      <View style={styles.detailsRow}>
+                        <View style={styles.detailsIcon}>
+                          <Feather name={row.icon} size={15} color={c.primary} />
+                        </View>
+                        <Text style={styles.detailsLabel}>{row.label}</Text>
+                        <Text style={styles.detailsValue} numberOfLines={2}>{row.value}</Text>
+                      </View>
+                      {idx < arr.length - 1 && <View style={styles.divider} />}
+                    </View>
+                  ))}
+                </View>
+              </ScrollView>
+            )}
+          </View>
+        </View>
+      </Modal>
+
     </SafeAreaView>
     </SubscriptionGuard>
   );
@@ -552,7 +908,7 @@ export default function AdminStudentsStatus() {
 const makeStyles = (c: ThemeColors) => StyleSheet.create({
   safe: { flex: 1, backgroundColor: c.bg },
   center: { flex: 1, alignItems: "center", justifyContent: "center" },
-  content: { padding: spacing.lg, paddingBottom: spacing.xxl + 32 },
+  content: { padding: spacing.lg, paddingBottom: 120 },
   header: { marginBottom: spacing.md },
   eyebrow: {
     ...typography.caption,
@@ -746,4 +1102,51 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     marginTop: spacing.xl,
   },
   sendBtnText: { ...typography.body, color: "#fff", fontWeight: "700" },
+  searchBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: c.inputBg,
+    borderRadius: radius.md,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginBottom: spacing.sm,
+  },
+  searchInput: {
+    flex: 1,
+    ...typography.subhead,
+    color: c.textPrimary,
+    paddingVertical: 2,
+  },
+  detailsAvatarRow: {
+    alignItems: "center",
+    paddingVertical: spacing.md,
+    gap: 10,
+  },
+  detailsAvatar: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: c.primaryLight,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  detailsAvatarLetter: { color: c.primary, fontSize: 26, fontWeight: "700" },
+  detailsName: { ...typography.title2, color: c.textPrimary, textAlign: "center" },
+  detailsCard: {
+    backgroundColor: c.inputBg,
+    borderRadius: radius.lg,
+    padding: spacing.md,
+    marginTop: spacing.sm,
+  },
+  detailsRow: { flexDirection: "row", alignItems: "center", paddingVertical: 10, gap: 10 },
+  detailsIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: c.primaryLight,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  detailsLabel: { ...typography.subhead, color: c.textSecondary, width: 100 },
+  detailsValue: { ...typography.subhead, color: c.textPrimary, fontWeight: "600", flex: 1 },
 });

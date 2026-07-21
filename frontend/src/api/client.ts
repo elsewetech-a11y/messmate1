@@ -1,12 +1,22 @@
 // API client for MessMate backend.
 
-const BASE_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
+import { Platform } from 'react-native';
+
+let BASE_URL = process.env.EXPO_PUBLIC_BACKEND_URL || "http://127.0.0.1:8000";
+
+if (__DEV__ && Platform.OS === 'android') {
+  if (BASE_URL.includes('localhost')) {
+    BASE_URL = BASE_URL.replace('localhost', '10.0.2.2');
+  } else if (BASE_URL.includes('127.0.0.1')) {
+    BASE_URL = BASE_URL.replace('127.0.0.1', '10.0.2.2');
+  }
+}
 
 if (!BASE_URL) {
   console.warn("EXPO_PUBLIC_BACKEND_URL is not defined");
 }
 
-export type ApprovalStatus = "pending" | "approved" | "rejected_or_blocked";
+export type ApprovalStatus = "pending" | "approved" | "blocked";
 export type Role = "student" | "admin";
 export type MealStatus = "ON" | "OFF";
 export type MealType = "breakfast" | "lunch" | "dinner";
@@ -128,6 +138,9 @@ export type User = {
   email_verified?: boolean;
   created_at: string;
   updated_at: string;
+  department?: string;
+  academic_year?: string;
+  roll_number?: string;
 };
 
 export type TokenResponse = {
@@ -211,6 +224,9 @@ export type StudentRow = {
   approval_status: ApprovalStatus;
   created_at: string;
   updated_at: string;
+  department?: string;
+  academic_year?: string;
+  roll_number?: string;
 };
 
 export type MealStat = {
@@ -395,25 +411,64 @@ async function request<T>(
   if (token) headers.Authorization = `Bearer ${token}`;
 
   const finalPath = path.startsWith("/api") ? path : `/api${path}`;
-  const res = await fetch(`${BASE_URL}${finalPath}`, {
-    method,
-    headers,
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  const fullUrl = `${BASE_URL}${finalPath}`;
+  
+  console.log(`[API Request] ${method} ${fullUrl}`);
+  if (body) {
+    console.log(`[API Request Body]`, body);
+  }
 
+  let res;
+  try {
+    res = await fetch(fullUrl, {
+      method,
+      headers,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch (error: any) {
+    console.error(`[API Error] Network error fetching ${finalPath}:`, error);
+    // Generic fallback for any network error
+    throw new ApiError(`Unable to connect. Please check your internet connection and try again.`, 0, null);
+  }
+  
   const text = await res.text();
   const data = text ? JSON.parse(text) : null;
+  console.log(`[API Response] ${method} ${fullUrl} - Status: ${res.status}`, data);
 
   if (!res.ok) {
     const detail = data && (data.detail || data.message);
-    let msg = `Request failed (${res.status})`;
-    if (typeof detail === "string") msg = detail;
-    else if (detail && typeof detail === "object" && detail.message) msg = detail.message;
+    
+    // Log the complete technical error internally for debugging
+    console.error(`[API Error] ${method} ${fullUrl} - Status: ${res.status} - Detail:`, detail);
+    
+    let msg = `Something went wrong. Please try again later.`;
+    
+    if (res.status === 404) {
+      msg = "The requested information could not be loaded.";
+    } else if (res.status === 422) {
+      // Parse FastAPI Pydantic validation errors
+      if (Array.isArray(detail)) {
+        msg = detail.map((e: any) => e.msg).join(", ");
+      } else {
+        msg = "Invalid input provided. Please check your data and try again.";
+      }
+    } else if (res.status >= 400 && res.status < 500) {
+      // Standard 4xx errors usually contain business logic messages we want to show
+      if (typeof detail === "string") {
+        msg = detail;
+      } else if (detail && typeof detail === "object" && detail.message) {
+        msg = detail.message;
+      } else {
+        msg = "Unable to complete your request at this time.";
+      }
+    } else if (res.status >= 500) {
+      // 500 errors should always be masked
+      msg = "Something went wrong. Please try again later.";
+    }
     
     // Check for expired token (401)
-    if (res.status === 401 && msg.toLowerCase().includes("expired")) {
-        // Here we could theoretically trigger a token refresh
-        // But for this frontend architecture, we'll let AuthContext handle the redirect
+    if (res.status === 401 && typeof detail === "string" && detail.toLowerCase().includes("expired")) {
+        // AuthContext handles redirect
     }
     
     maybeFireSessionInvalidated(res.status, data);
@@ -425,6 +480,7 @@ async function request<T>(
 export const api = {
   refreshToken: (payload: { refresh_token: string }): Promise<TokenResponse> => request("/api/auth/refresh", { method: "POST", body: payload }),
   getSubscriptionStatus: (token: string): Promise<SubscriptionPublic> => request("/api/subscription/status", { token }),
+  getStudentSubscriptionStatus: (token: string): Promise<SubscriptionPublic> => request("/api/student/subscription/status", { token }),
   renewSubscription: (token: string): Promise<{success: boolean; message: string}> => request("/api/subscription/renew", { token, method: "POST" }),
   createSubscriptionOrder: (token: string, payload: OrderCreateRequest): Promise<OrderCreateResponse> => request("/api/subscription/order", { token, method: "POST", body: payload }),
   verifyPayment: (token: string, payload: PaymentVerifyRequest): Promise<{success: boolean; message: string}> => request("/api/subscription/verify-payment", { token, method: "POST", body: payload }),
@@ -446,24 +502,29 @@ export const api = {
     confirm_password: string;
     institution_or_hostel_name: string;
     role?: "student" | "admin";
+    department?: string;
+    academic_year?: string;
+    roll_number?: string;
+    room_number?: string;
   }) =>
     request<{
       status: "verification_required";
       email: string;
       resend_available_in: number;
       expires_in: number;
+      dev_otp?: string;
     }>("/auth/register", { method: "POST", body: payload }),
   verifyEmail: (payload: { email: string; otp: string }) =>
     request<TokenResponse | { status: string; email: string }>("/auth/verify-email", { method: "POST", body: payload }),
   login: (payload: { email: string; password: string }) =>
     request<TokenResponse>("/auth/login", { method: "POST", body: payload }),
   resendOtp: (payload: { email: string; purpose: "registration" | "forgot_password" }) =>
-    request<{ status: string; resend_available_in: number; expires_in: number }>(
+    request<{ status: string; resend_available_in: number; expires_in: number; dev_otp?: string }>(
       "/auth/resend-otp",
       { method: "POST", body: payload },
     ),
   forgotPassword: (payload: { email: string }) =>
-    request<{ status: string; resend_available_in: number; expires_in: number }>(
+    request<{ status: string; resend_available_in: number; expires_in: number; dev_otp?: string }>(
       "/auth/forgot-password",
       { method: "POST", body: payload },
     ),
@@ -500,6 +561,12 @@ export const api = {
       token,
     }),
   me: (token: string) => request<User>("/auth/me", { token }),
+  changePassword: (token: string, payload: any) =>
+    request<{ ok: boolean }>("/auth/change-password", {
+      method: "POST",
+      body: payload,
+      token,
+    }),
 
   // Student
   studentMeta: (token: string) =>
@@ -562,6 +629,16 @@ export const api = {
     }),
   adminReject: (token: string, id: string) =>
     request<{ ok: boolean }>(`/admin/students/${id}/reject`, {
+      method: "POST",
+      token,
+    }),
+  adminBlock: (token: string, id: string) =>
+    request<{ ok: boolean; message?: string }>(`/admin/students/${id}/block`, {
+      method: "POST",
+      token,
+    }),
+  adminRemove: (token: string, id: string) =>
+    request<{ ok: boolean; message?: string }>(`/admin/students/${id}/remove`, {
       method: "POST",
       token,
     }),
@@ -652,21 +729,19 @@ export const api = {
   // Notifications
   studentNotifications: (token: string) =>
     request<{
+      unread_count: number;
       items: {
         id: string;
         title: string;
-        body: string;
-        type: string;
-        scheduled_for: string;
-        send_at?: string | null;
-        sent?: boolean;
-        sent_at?: string | null;
+        message: string;
+        date: string;
+        day: string;
+        time: string;
         created_at: string;
-        read: boolean;
+        read_status: boolean;
       }[];
-      unread_count: number;
     }>("/student/notifications", { token }),
-  markNotifRead: (token: string, id: string) =>
+  markStudentNotifRead: (token: string, id: string) =>
     request<{ ok: boolean }>(`/student/notifications/${id}/read`, {
       method: "POST",
       token,
@@ -676,122 +751,102 @@ export const api = {
       method: "DELETE",
       token,
     }),
-  adminNotifications: (token: string) =>
-    request<{
-      items: {
-        id: string;
-        title: string;
-        body: string;
-        type: string;
-        scheduled_for: string;
-        send_at?: string | null;
-        sent?: boolean;
-        sent_at?: string | null;
-        created_at: string;
-      }[];
-    }>("/admin/notifications", { token }),
-  adminCreateNotification: (
-    token: string,
-    body: {
-      title: string;
-      body: string;
-      audience?: "all" | "student";
-      recipient_id?: string;
-      type?: "announcement" | "menu_reminder" | "system";
-      action_url?: string;
-      scheduled_for?: string;
-      send_at?: string; // ISO datetime — when to actually fire
-    },
-  ) =>
-    request<any>("/admin/notifications", {
+  clearStudentNotifs: (token: string) =>
+    request<{ ok: boolean }>("/student/notifications/clear", {
       method: "POST",
-      body,
       token,
     }),
-  adminNotificationDefaultTemplate: (token: string) =>
-    request<{ title: string; body: string }>(
-      "/admin/notifications/default-template",
-      { token },
-    ),
-  adminUpdateNotification: (
-    token: string,
-    id: string,
-    body: { title?: string; body?: string; send_at?: string },
-  ) =>
-    request<any>(`/admin/notifications/${id}`, {
-      method: "PATCH",
-      body,
-      token,
-    }),
-  adminDeleteNotification: (token: string, id: string) =>
-    request<null>(`/admin/notifications/${id}`, {
-      method: "DELETE",
-      token,
-    }),
-  adminMenuReminder: (token: string, custom_body?: string) =>
-    request<any>("/admin/notifications/menu-reminder", {
-      method: "POST",
-      body: { custom_body },
-      token,
-    }),
-  adminDispatchReminder: (
-    token: string,
-    payload: { audience?: "student" | "admin" | "all"; title?: string; body?: string },
-  ) =>
-    request<{
-      ok: boolean;
-      audience: string;
-      recipients: number;
-      notification: any;
-    }>("/admin/notifications/dispatch-reminder", {
+  getNotificationSettings: (token: string) =>
+    request<any>("/student/notification-settings", { token }),
+  updateNotificationSettings: (token: string, payload: any) =>
+    request<{ ok: boolean }>("/student/notification-settings", {
       method: "POST",
       body: payload,
       token,
     }),
-  
-  // Recurring Notifications
-  adminListScheduledNotifications: (token: string) =>
-    request<{ items: RecurringNotification[] }>("/admin/scheduled-notifications", { token }),
-  
-  adminCreateScheduledNotification: (
+  adminNotifications: (token: string) =>
+    request<{
+      items: {
+        id: string;
+        institution_or_hostel_name: string;
+        category: string;
+        title: string;
+        description: string;
+        created_at: string;
+        read_status: boolean;
+        action_url?: string;
+      }[];
+    }>("/admin/notifications", { token }),
+  markAdminNotifRead: (token: string, id: string) =>
+    request<{ ok: boolean }>(`/admin/notifications/${id}/read`, {
+      method: "POST",
+      token,
+    }),
+  deleteAdminNotif: (token: string, id: string) =>
+    request<{ ok: boolean }>(`/admin/notifications/${id}`, {
+      method: "DELETE",
+      token,
+    }),
+  clearAdminNotifs: (token: string) =>
+    request<{ ok: boolean }>(`/admin/notifications/clear`, {
+      method: "POST",
+      token,
+    }),
+  adminPushImmediate: (
     token: string,
     body: {
       title: string;
       message: string;
-      notificationType: "Daily" | "Weekly" | "One Time";
-      scheduledTime: string;
-      startDate: string;
-      endDate?: string | null;
-    }
+    },
   ) =>
-    request<RecurringNotification>("/admin/scheduled-notifications", {
+    request<{ ok: boolean; delivered_count: number }>("/admin/notifications/push/immediate", {
       method: "POST",
       body,
       token,
     }),
-    
-  adminUpdateScheduledNotification: (
+  adminPushSchedule: (
     token: string,
-    id: string,
-    body: Partial<{
+    body: {
       title: string;
       message: string;
-      notificationType: "Daily" | "Weekly" | "One Time";
-      scheduledTime: string;
-      startDate: string;
-      endDate: string | null;
-      isActive: boolean;
-    }>
+      notificationType: "Immediate" | "Scheduled";
+      daysSelection?: string[];
+      scheduledTime?: string;
+      repeatOption?: "Send Once" | "Repeat Weekly" | "Repeat Every Selected Day";
+    },
   ) =>
-    request<RecurringNotification>(`/admin/scheduled-notifications/${id}`, {
+    request<any>("/admin/notifications/push/schedule", {
+      method: "POST",
+      body,
+      token,
+    }),
+  adminPushScheduleList: (token: string) =>
+    request<{ items: any[] }>("/admin/notifications/push/schedule", { token }),
+  adminPushScheduleUpdate: (
+    token: string,
+    id: string,
+    body: any,
+  ) =>
+    request<any>(`/admin/notifications/push/schedule/${id}`, {
       method: "PUT",
       body,
       token,
     }),
-    
-  adminDeleteScheduledNotification: (token: string, id: string) =>
-    request<null>(`/admin/scheduled-notifications/${id}`, {
+  adminPushScheduleDelete: (token: string, id: string) =>
+    request<null>(`/admin/notifications/push/schedule/${id}`, {
       method: "DELETE",
+      token,
+    }),
+  adminPushTest: (
+    token: string,
+    body: {
+      title: string;
+      message: string;
+    },
+  ) =>
+    request<{ ok: boolean; delivered_count: number }>("/admin/notifications/push/test", {
+      method: "POST",
+      body,
       token,
     }),
 };

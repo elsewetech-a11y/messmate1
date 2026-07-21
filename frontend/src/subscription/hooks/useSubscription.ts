@@ -5,7 +5,7 @@ import type { SubscriptionPublic, SubscriptionStatus } from "@/src/api/client";
 import { useFocusEffect } from "expo-router";
 
 export function useSubscription() {
-  const { token } = useAuth();
+  const { token, user } = useAuth();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [subscription, setSubscription] = useState<SubscriptionPublic | null>(null);
@@ -14,7 +14,7 @@ export function useSubscription() {
     if (!token) return;
     try {
       setLoading(true);
-      const data = await subscriptionService.checkSubscriptionStatus(token);
+      const data = await subscriptionService.checkSubscriptionStatus(token, user?.role);
       setSubscription(data);
       setError(null);
     } catch (err: any) {
@@ -35,7 +35,7 @@ export function useSubscription() {
     } finally {
       setLoading(false);
     }
-  }, [token]);
+  }, [token, user?.role]);
 
   // Fetch on mount and when screen is focused
   useFocusEffect(

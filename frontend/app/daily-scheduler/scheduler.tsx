@@ -14,14 +14,15 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+import { api } from "@/src/api/client";
+import { useAuth } from "@/src/auth/AuthContext";
+import { radius, shadow, spacing, typography, useTheme } from "@/src/theme";
+import { nowIST, todayInIST, formatDateIST, formatTimeFromPicker } from "@/src/utils/istDate";
+
 let DateTimePicker: any = null;
 if (Platform.OS !== "web") {
   DateTimePicker = require("@react-native-community/datetimepicker").default;
 }
-
-import { api } from "@/src/api/client";
-import { useAuth } from "@/src/auth/AuthContext";
-import { radius, shadow, spacing, typography, useTheme } from "@/src/theme";
 
 export default function AdminNotificationScheduler() {
   const { token } = useAuth();
@@ -32,10 +33,10 @@ export default function AdminNotificationScheduler() {
   const [message, setMessage] = useState("");
   const [type, setType] = useState<"Daily" | "Weekly" | "One Time">("Daily");
 
-  const [time, setTime] = useState(new Date());
+  const [time, setTime] = useState(nowIST());
   const [showTimePicker, setShowTimePicker] = useState(false);
 
-  const [startDate, setStartDate] = useState(new Date());
+  const [startDate, setStartDate] = useState(todayInIST());
   const [showStartDate, setShowStartDate] = useState(false);
 
   const [endDate, setEndDate] = useState<Date | null>(null);
@@ -61,13 +62,12 @@ export default function AdminNotificationScheduler() {
     if (!token) return;
     setSaving(true);
     try {
-      await api.adminCreateScheduledNotification(token, {
+      await api.adminPushSchedule(token, {
         title: title.trim(),
         message: message.trim(),
-        notificationType: type,
-        scheduledTime: `${time.getHours().toString().padStart(2, "0")}:${time.getMinutes().toString().padStart(2, "0")}`,
-        startDate: startDate.toISOString().split("T")[0],
-        endDate: endDate ? endDate.toISOString().split("T")[0] : null,
+        notificationType: "Scheduled",
+        repeatOption: type === "One Time" ? "Send Once" : (type === "Weekly" ? "Repeat Weekly" : "Repeat Every Selected Day"),
+        scheduledTime: `${String(time.getHours()).padStart(2, "0")}:${String(time.getMinutes()).padStart(2, "0")}`,
       });
       Alert.alert("Success", "Scheduled Successfully");
       router.back();
@@ -152,17 +152,17 @@ export default function AdminNotificationScheduler() {
             >
               <Feather name="clock" size={18} color={c.textPrimary} />
               <Text style={[styles.dateText, { color: c.textPrimary }]}>
-                {time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                {formatTimeFromPicker(time)}
               </Text>
             </TouchableOpacity>
             {showTimePicker && (
               Platform.OS === "web" ? (
                 <input
                   type="time"
-                  value={`${time.getHours().toString().padStart(2, '0')}:${time.getMinutes().toString().padStart(2, '0')}`}
+                  value={`${String(time.getHours()).padStart(2, '0')}:${String(time.getMinutes()).padStart(2, '0')}`}
                   onChange={(e) => {
                     const [hours, minutes] = e.target.value.split(':');
-                    const newDate = new Date(time);
+                    const newDate = nowIST();
                     newDate.setHours(parseInt(hours), parseInt(minutes));
                     setTime(newDate);
                     setShowTimePicker(false);
@@ -192,7 +192,7 @@ export default function AdminNotificationScheduler() {
               >
                 <Feather name="calendar" size={18} color={c.textPrimary} />
                 <Text style={[styles.dateText, { color: c.textPrimary }]}>
-                  {startDate.toLocaleDateString()}
+                  {formatDateIST(startDate)}
                 </Text>
               </TouchableOpacity>
               {showStartDate && (
@@ -200,7 +200,7 @@ export default function AdminNotificationScheduler() {
                   value={startDate}
                   mode="date"
                   display="default"
-                  minimumDate={new Date()}
+                  minimumDate={todayInIST()}
                   onChange={(event: any, date?: Date) => {
                     setShowStartDate(false);
                     if (date) setStartDate(date);
@@ -217,12 +217,12 @@ export default function AdminNotificationScheduler() {
               >
                 <Feather name="calendar" size={18} color={c.textPrimary} />
                 <Text style={[styles.dateText, { color: c.textPrimary }]}>
-                  {endDate ? endDate.toLocaleDateString() : "Forever"}
+                  {endDate ? formatDateIST(endDate) : "Forever"}
                 </Text>
               </TouchableOpacity>
               {showEndDate && (
                 <DateTimePicker
-                  value={endDate || new Date()}
+                  value={endDate || todayInIST()}
                   mode="date"
                   display="default"
                   minimumDate={startDate}

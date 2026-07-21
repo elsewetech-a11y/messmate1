@@ -32,7 +32,7 @@ export function PlanSelector({ selectedPlan, onSelectPlan }: PlanSelectorProps) 
     <View style={styles.container}>
       <Text style={styles.sectionTitle}>Select Plan</Text>
       <Text style={styles.sectionSubtitle}>
-        Choose between monthly or yearly billing. Yearly plans save you 25%.
+        Choose between monthly or yearly billing.
       </Text>
       <View style={styles.row}>
         {/* Monthly Plan */}
@@ -52,7 +52,7 @@ export function PlanSelector({ selectedPlan, onSelectPlan }: PlanSelectorProps) 
           )}
           <Text style={styles.planTitle}>Monthly Plan</Text>
           <Text style={styles.priceText}>₹{PRICING_CONFIG.MONTHLY_PRICE}</Text>
-          <Text style={styles.perStudentText}>per student/month</Text>
+          <Text style={styles.perStudentText}>per student</Text>
           <Text style={styles.durationText}>30 Days</Text>
         </TouchableOpacity>
 
@@ -72,11 +72,11 @@ export function PlanSelector({ selectedPlan, onSelectPlan }: PlanSelectorProps) 
             </View>
           )}
           <View style={styles.saveBadge}>
-            <Text style={styles.saveBadgeText}>Save 25%</Text>
+            <Text style={styles.saveBadgeText}>Save ~16%</Text>
           </View>
           <Text style={styles.planTitle}>Yearly Plan</Text>
-          <Text style={styles.priceText}>₹{PRICING_CONFIG.YEARLY_PRICE}</Text>
-          <Text style={styles.perStudentText}>per student/month</Text>
+          <Text style={styles.priceText}>₹{PRICING_CONFIG.YEARLY_PRICE.toFixed(2)}</Text>
+          <Text style={styles.perStudentText}>per student</Text>
           <Text style={styles.durationText}>365 Days</Text>
         </TouchableOpacity>
       </View>

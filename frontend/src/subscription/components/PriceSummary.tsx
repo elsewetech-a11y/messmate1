@@ -4,6 +4,7 @@ import { Feather } from "@expo/vector-icons";
 import { radius, shadow, typography, useTheme, type ThemeColors } from "@/src/theme";
 import type { BillingCycle } from "../hooks/useSubscriptionCalculator";
 import { PRICING_CONFIG } from "../constants/pricingConfig";
+import { todayInIST, formatDateIST } from "@/src/utils/istDate";
 
 type PriceSummaryProps = {
   plan: BillingCycle;
@@ -27,13 +28,9 @@ export function PriceSummary({
 
   // Calculate the expected expiry date
   const expectedExpiry = useMemo(() => {
-    const date = new Date();
-    date.setDate(date.getDate() + subscriptionDuration);
-    return date.toLocaleDateString("en-IN", {
-      day: "numeric",
-      month: "long",
-      year: "numeric",
-    });
+    const start = todayInIST();
+    const expiry = new Date(start.getTime() + subscriptionDuration * 24 * 60 * 60 * 1000);
+    return formatDateIST(expiry);
   }, [subscriptionDuration]);
 
   if (!isValid) {
@@ -65,7 +62,7 @@ export function PriceSummary({
 
       <View style={styles.row}>
         <Text style={styles.label}>Price Per Student</Text>
-        <Text style={styles.value}>₹{pricePerStudent}/month</Text>
+        <Text style={styles.value}>₹{plan === "monthly" ? pricePerStudent : pricePerStudent.toFixed(2)}</Text>
       </View>
 
       <View style={styles.row}>
@@ -79,9 +76,6 @@ export function PriceSummary({
         <Text style={styles.totalLabel}>Total Amount</Text>
         <Text style={styles.totalValue}>
           ₹{totalPrice.toLocaleString()}
-          <Text style={styles.totalPeriod}>
-            {plan === "monthly" ? "/month" : "/year"}
-          </Text>
         </Text>
       </View>
 

@@ -641,7 +641,7 @@ export default function AdminNecessaryInfo() {
 const makeStyles = (c: ThemeColors) => StyleSheet.create({
   safe: { flex: 1, backgroundColor: c.bg },
   center: { flex: 1, alignItems: "center", justifyContent: "center" },
-  content: { padding: spacing.lg, paddingBottom: spacing.xxl + 32 },
+  content: { padding: spacing.lg, paddingBottom: 120 },
   header: { marginBottom: spacing.md },
   eyebrow: {
     ...typography.caption,

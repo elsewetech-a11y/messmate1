@@ -191,7 +191,7 @@ export default function StudentWastage() {
 const makeStyles = (c: ThemeColors) => StyleSheet.create({
   safe: { flex: 1, backgroundColor: c.bg },
   loadingWrap: { paddingVertical: 60, alignItems: "center" },
-  content: { padding: spacing.lg, paddingBottom: spacing.xxl + 24 },
+  content: { padding: spacing.lg, paddingBottom: 120 },
   header: { marginBottom: spacing.lg },
   eyebrow: {
     ...typography.caption,

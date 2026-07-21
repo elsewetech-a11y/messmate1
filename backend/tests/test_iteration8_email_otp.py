@@ -26,17 +26,11 @@ from passlib.context import CryptContext
 from pymongo import MongoClient
 
 # Load backend .env
-sys.path.insert(0, str(Path("/app/backend")))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 from dotenv import load_dotenv
-load_dotenv("/app/backend/.env")
+load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 
-BASE_URL = os.environ["EXPO_PUBLIC_BACKEND_URL"].rstrip("/") if os.environ.get("EXPO_PUBLIC_BACKEND_URL") else None
-if not BASE_URL:
-    # Fall back to frontend/.env
-    with open("/app/frontend/.env") as f:
-        for line in f:
-            if line.startswith("EXPO_PUBLIC_BACKEND_URL="):
-                BASE_URL = line.strip().split("=", 1)[1].strip('"').rstrip("/")
+BASE_URL = "http://127.0.0.1:8000"
 
 API = f"{BASE_URL}/api"
 MONGO_URL = os.environ["MONGO_URL"]
@@ -89,6 +83,7 @@ def _cleanup(emails):
         return
     _db.users.delete_many({"email": {"$in": list(emails)}})
     _db.email_otps.delete_many({"email": {"$in": list(emails)}})
+    _db.subscriptions.delete_many({"institution_or_hostel_name": "TEST_Hostel_A"})
 
 
 @pytest.fixture
@@ -128,7 +123,7 @@ class TestRegister:
         assert "otp" not in body
         assert "otp_hash" not in body
         # User row exists, unverified
-        u = _db.users.find_one({"email": email})
+        u = _db.pending_requests.find_one({"email": email})
         assert u is not None
         assert u["email_verified"] is False
         assert u["role"] == "student"
@@ -188,7 +183,7 @@ class TestRegister:
             "institution_or_hostel_name": "TEST_Hostel_B",
         })
         assert r2.status_code == 201, r2.text
-        u = _db.users.find_one({"email": email})
+        u = _db.pending_requests.find_one({"email": email})
         assert u["full_name"] == "Renamed"
         assert u["institution_or_hostel_name"] == "TEST_Hostel_B"
         new_hash = _db.email_otps.find_one({"email": email, "purpose": "registration"})["otp_hash"]
@@ -202,6 +197,7 @@ class TestRegister:
             "email": email,
             "password": "secret123",
             "institution_or_hostel_name": "TEST_Hostel_A",
+            "role": "admin",
         })
         # Mark verified directly
         _db.users.update_one({"email": email}, {"$set": {"email_verified": True}})
@@ -210,6 +206,7 @@ class TestRegister:
             "email": email,
             "password": "secret123",
             "institution_or_hostel_name": "TEST_Hostel_A",
+            "role": "admin",
         })
         assert r.status_code == 400
         assert "already registered" in r.json()["detail"].lower()
@@ -226,7 +223,8 @@ class TestVerifyEmail:
             "full_name": "Ver User",
             "email": email,
             "password": "secret123",
-            "institution_or_hostel_name": "TEST_Hostel_A",
+            "institution_or_hostel_name": f"TEST_Hostel_{uuid.uuid4().hex[:6]}",
+            "role": "admin",
         })
         assert r.status_code == 201
         return email
@@ -297,6 +295,7 @@ class TestLogin:
             "email": email,
             "password": pwd,
             "institution_or_hostel_name": "TEST_Hostel_A",
+            "role": "admin",
         })
         _set_otp_hash(email, "registration", KNOWN_OTP)
         r = api.post(f"{API}/auth/verify-email", json={"email": email, "otp": KNOWN_OTP})
@@ -317,6 +316,7 @@ class TestLogin:
             "email": email,
             "password": "secret123",
             "institution_or_hostel_name": "TEST_Hostel_A",
+            "role": "admin",
         })
         r = api.post(f"{API}/auth/login", json={"email": email, "password": "secret123"})
         assert r.status_code == 403
@@ -346,6 +346,7 @@ class TestResendOtp:
             "email": email,
             "password": "secret123",
             "institution_or_hostel_name": "TEST_Hostel_A",
+            "role": "admin",
         })
         # Immediate resend should be throttled
         r = api.post(f"{API}/auth/resend-otp", json={"email": email, "purpose": "registration"})
@@ -360,6 +361,7 @@ class TestResendOtp:
             "email": email,
             "password": "secret123",
             "institution_or_hostel_name": "TEST_Hostel_A",
+            "role": "admin",
         })
         old_hash = _db.email_otps.find_one({"email": email, "purpose": "registration"})["otp_hash"]
         # Age backward
@@ -382,6 +384,7 @@ class TestResendOtp:
             "email": email,
             "password": "secret123",
             "institution_or_hostel_name": "TEST_Hostel_A",
+            "role": "admin",
         })
         _db.users.update_one({"email": email}, {"$set": {"email_verified": True}})
         r = api.post(f"{API}/auth/resend-otp", json={"email": email, "purpose": "registration"})
@@ -401,6 +404,7 @@ class TestForgotPassword:
             "email": email,
             "password": pwd,
             "institution_or_hostel_name": "TEST_Hostel_A",
+            "role": "admin",
         })
         _set_otp_hash(email, "registration", KNOWN_OTP)
         api.post(f"{API}/auth/verify-email", json={"email": email, "otp": KNOWN_OTP})
@@ -461,6 +465,7 @@ class TestResetPassword:
             "email": email,
             "password": "oldpass123",
             "institution_or_hostel_name": "TEST_Hostel_A",
+            "role": "admin",
         })
         _set_otp_hash(email, "registration", KNOWN_OTP)
         api.post(f"{API}/auth/verify-email", json={"email": email, "otp": KNOWN_OTP})

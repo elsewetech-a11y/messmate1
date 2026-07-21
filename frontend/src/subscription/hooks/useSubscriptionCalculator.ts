@@ -3,8 +3,11 @@ import { PRICING_CONFIG, calculateMonthlyPrice, calculateYearlyPrice } from "../
 
 export type BillingCycle = "monthly" | "yearly";
 
-export function useSubscriptionCalculator(initialStudents: number = PRICING_CONFIG.MIN_STUDENTS) {
-  const [students, setStudents] = useState(initialStudents);
+export function useSubscriptionCalculator(
+  initialStudents: number = PRICING_CONFIG.MIN_STUDENTS,
+  minStudents: number = PRICING_CONFIG.MIN_STUDENTS
+) {
+  const [students, setStudents] = useState(Math.max(initialStudents, minStudents));
   const [billingCycle, setBillingCycle] = useState<BillingCycle>("monthly");
 
   const handleStudentChange = useCallback((value: number) => {
@@ -14,22 +17,22 @@ export function useSubscriptionCalculator(initialStudents: number = PRICING_CONF
   }, []);
 
   const handleSliderChange = useCallback((value: number) => {
-    setStudents(Math.max(PRICING_CONFIG.MIN_STUDENTS, Math.min(PRICING_CONFIG.MAX_STUDENTS, value)));
-  }, []);
+    setStudents(Math.max(minStudents, Math.min(PRICING_CONFIG.MAX_STUDENTS, value)));
+  }, [minStudents]);
 
   const handleInputBlur = useCallback(() => {
-    if (students < PRICING_CONFIG.MIN_STUDENTS) {
-      setStudents(PRICING_CONFIG.MIN_STUDENTS);
+    if (students < minStudents) {
+      setStudents(minStudents);
     } else if (students > PRICING_CONFIG.MAX_STUDENTS) {
       setStudents(PRICING_CONFIG.MAX_STUDENTS);
     }
-  }, [students]);
+  }, [students, minStudents]);
 
   const totalPrice = billingCycle === "monthly" 
     ? calculateMonthlyPrice(students) 
     : calculateYearlyPrice(students);
 
-  const isValid = students >= PRICING_CONFIG.MIN_STUDENTS && students <= PRICING_CONFIG.MAX_STUDENTS;
+  const isValid = students >= minStudents && students <= PRICING_CONFIG.MAX_STUDENTS;
 
   const pricePerStudent = billingCycle === "monthly"
     ? PRICING_CONFIG.MONTHLY_PRICE

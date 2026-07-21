@@ -1,6 +1,6 @@
 export const PRICING_CONFIG = {
-  MONTHLY_PRICE: 2.0,
-  YEARLY_PRICE: 1.5,
+  MONTHLY_PRICE: 3.0,
+  YEARLY_PRICE: 2.50,
   MIN_STUDENTS: 250,
   MAX_STUDENTS: 10000,
   FREE_TRIAL_DAYS: 10,
@@ -13,7 +13,7 @@ export const calculateMonthlyPrice = (students: number) => {
 };
 
 export const calculateYearlyPrice = (students: number) => {
-  return students * PRICING_CONFIG.YEARLY_PRICE * 12; // Yearly total
+  return students * PRICING_CONFIG.YEARLY_PRICE; // Yearly total
 };
 
 export const calculateYearlyPricePerMonth = (students: number) => {

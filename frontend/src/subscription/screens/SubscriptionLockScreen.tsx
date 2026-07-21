@@ -1,10 +1,12 @@
-import React, { useMemo } from "react";
-import { StyleSheet, Text, View, SafeAreaView, ActivityIndicator } from "react-native";
+import React, { useMemo, useState } from "react";
+import { StyleSheet, Text, View, SafeAreaView, Modal } from "react-native";
 import { Feather } from "@expo/vector-icons";
 import { radius, typography, useTheme, type ThemeColors } from "@/src/theme";
 import { Button } from "@/src/components/Button";
-
+import { useRouter } from "expo-router";
+import * as Clipboard from "expo-clipboard";
 import type { SubscriptionPublic } from "@/src/api/client";
+import { formatISOasDateIST } from "@/src/utils/istDate";
 
 type SubscriptionLockScreenProps = {
   role: "admin" | "student";
@@ -17,6 +19,8 @@ type SubscriptionLockScreenProps = {
 export function SubscriptionLockScreen({ role, institutionName, subscription, isRenewing, onRenew }: SubscriptionLockScreenProps) {
   const { c } = useTheme();
   const styles = useMemo(() => makeStyles(c), [c]);
+  const router = useRouter();
+  const [isSupportModalVisible, setSupportModalVisible] = useState(false);
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -41,7 +45,7 @@ export function SubscriptionLockScreen({ role, institutionName, subscription, is
                 </View>
                 <View style={styles.detailRow}>
                   <Text style={styles.detailLabel}>Expiry Date:</Text>
-                  <Text style={styles.detailValue}>{subscription.expiry_date ? new Date(subscription.expiry_date).toLocaleDateString() : "N/A"}</Text>
+                  <Text style={styles.detailValue}>{subscription.expiry_date ? formatISOasDateIST(subscription.expiry_date) : "N/A"}</Text>
                 </View>
                 <View style={styles.detailRow}>
                   <Text style={styles.detailLabel}>Student Capacity:</Text>
@@ -52,14 +56,13 @@ export function SubscriptionLockScreen({ role, institutionName, subscription, is
 
             <View style={styles.actions}>
               <Button 
-                label={isRenewing ? "Renewing..." : "Renew Subscription"}
-                onPress={onRenew}
+                label="Renew Subscription"
+                onPress={() => router.push("/(admin)/subscription")}
                 style={styles.primaryButton}
-                disabled={isRenewing}
               />
               <Button 
                 label="Contact Support"
-                onPress={() => {}} // In real app, open mailto link
+                onPress={() => setSupportModalVisible(true)}
               />
             </View>
           </>
@@ -77,6 +80,39 @@ export function SubscriptionLockScreen({ role, institutionName, subscription, is
           </>
         )}
       </View>
+
+      <Modal
+        visible={isSupportModalVisible}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setSupportModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Contact Support</Text>
+            <Text style={styles.modalBody}>
+              For any subscription or technical support, please contact us at:
+            </Text>
+            <Text style={styles.modalEmail}>elsewe.tech@gmail.com</Text>
+            
+            <View style={styles.modalActions}>
+              <Button 
+                label="Copy Email" 
+                onPress={async () => {
+                  await Clipboard.setStringAsync('elsewe.tech@gmail.com');
+                  setSupportModalVisible(false);
+                }} 
+                style={styles.primaryButton}
+              />
+              <Button 
+                label="Close" 
+                onPress={() => setSupportModalVisible(false)} 
+                variant="secondary"
+              />
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -165,5 +201,42 @@ const makeStyles = (c: ThemeColors) =>
       ...typography.body,
       fontWeight: "700",
       color: c.textPrimary,
+    },
+    modalOverlay: {
+      flex: 1,
+      backgroundColor: "rgba(0, 0, 0, 0.5)",
+      justifyContent: "center",
+      alignItems: "center",
+      padding: 24,
+    },
+    modalContent: {
+      backgroundColor: c.bg,
+      borderRadius: radius.lg,
+      padding: 24,
+      width: "100%",
+      maxWidth: 400,
+      alignItems: "center",
+      borderWidth: 1,
+      borderColor: c.border,
+    },
+    modalTitle: {
+      ...typography.title2,
+      color: c.textPrimary,
+      marginBottom: 16,
+    },
+    modalBody: {
+      ...typography.body,
+      color: c.textSecondary,
+      textAlign: "center",
+      marginBottom: 16,
+    },
+    modalEmail: {
+      ...typography.headline,
+      color: c.primary,
+      marginBottom: 24,
+    },
+    modalActions: {
+      width: "100%",
+      gap: 12,
     },
   });

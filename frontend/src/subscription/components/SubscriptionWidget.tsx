@@ -3,6 +3,7 @@ import { StyleSheet, Text, View, TouchableOpacity } from "react-native";
 import { useRouter } from "expo-router";
 import { radius, shadow, typography, useTheme, type ThemeColors } from "@/src/theme";
 import { useSubscription } from "../hooks/useSubscription";
+import { formatISOasDateIST } from "@/src/utils/istDate";
 
 export function SubscriptionWidget() {
   const { c } = useTheme();
@@ -41,7 +42,7 @@ export function SubscriptionWidget() {
         </View>
         <View style={styles.gridItem}>
           <Text style={styles.label}>Next Renewal</Text>
-          <Text style={styles.value}>{expiry_date ? new Date(expiry_date).toLocaleDateString() : "N/A"}</Text>
+          <Text style={styles.value}>{expiry_date ? formatISOasDateIST(expiry_date) : "N/A"}</Text>
         </View>
       </View>
 

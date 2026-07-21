@@ -1,5 +1,5 @@
 // Admin Tab 2 — Dashboard. Suggested cook quantity per meal item with a
-// Today/Tomorrow toggle.
+import { formatHomeDate } from "@/src/utils/istDate";
 
 import { Feather } from "@expo/vector-icons";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
@@ -179,16 +179,7 @@ export default function AdminDashboard() {
 
   const dateLabel = useMemo(() => {
     if (!data?.date) return "";
-    try {
-      const d = new Date(data.date + "T00:00:00");
-      return d.toLocaleDateString(undefined, {
-        weekday: "long",
-        day: "numeric",
-        month: "short",
-      });
-    } catch {
-      return data.date;
-    }
+    return formatHomeDate(data.date);
   }, [data?.date]);
 
   return (
@@ -308,7 +299,7 @@ const makeStyles = (c: ThemeColors) =>
   StyleSheet.create({
     safe: { flex: 1, backgroundColor: c.bg },
     center: { flex: 1, alignItems: "center", justifyContent: "center" },
-    content: { padding: spacing.lg, paddingBottom: spacing.xxl + 32 },
+    content: { padding: spacing.lg, paddingBottom: 120 },
     header: { marginBottom: spacing.md },
     eyebrow: {
       ...typography.caption,

@@ -3,6 +3,7 @@ import { StyleSheet, Text, View, TouchableOpacity } from "react-native";
 import { Feather } from "@expo/vector-icons";
 import { radius, spacing, typography, useTheme, type ThemeColors } from "@/src/theme";
 import type { TransactionPublic } from "@/src/api/client";
+import { formatISOasDateTimeIST } from "@/src/utils/istDate";
 
 type TransactionCardProps = {
   transaction: TransactionPublic;
@@ -29,7 +30,7 @@ export function TransactionCard({ transaction, onDownload }: TransactionCardProp
           <Text style={styles.orderNumber}>{transaction.order_id}</Text>
           <Text style={styles.date}>
             {transaction.transaction_date 
-              ? new Date(transaction.transaction_date).toLocaleString() 
+              ? formatISOasDateTimeIST(transaction.transaction_date) 
               : "Pending"}
           </Text>
         </View>

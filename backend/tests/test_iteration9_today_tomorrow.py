@@ -23,15 +23,12 @@ import requests
 from passlib.context import CryptContext
 from pymongo import MongoClient
 
-sys.path.insert(0, str(Path("/app/backend")))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 from dotenv import load_dotenv
 
-load_dotenv("/app/backend/.env")
+load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 
-BASE_URL = (
-    os.environ.get("EXPO_PUBLIC_BACKEND_URL")
-    or open("/app/frontend/.env").read().split("EXPO_PUBLIC_BACKEND_URL=", 1)[1].split("\n", 1)[0].strip('"')
-).rstrip("/")
+BASE_URL = "http://127.0.0.1:8000"
 API = f"{BASE_URL}/api"
 
 MONGO_URL = os.environ["MONGO_URL"]

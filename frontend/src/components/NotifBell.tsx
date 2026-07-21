@@ -3,7 +3,7 @@
 import { Feather } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import React, { useCallback, useEffect, useState } from "react";
-import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { Platform, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 
 import { api } from "@/src/api/client";
 import { useAuth } from "@/src/auth/AuthContext";
@@ -22,8 +22,8 @@ export function NotifBell({ testID = "notif-bell" }: { testID?: string }) {
         const res = await api.studentNotifications(token);
         setUnread(res.unread_count);
       } else if (user?.role === "admin") {
-        const res = await api.getNotifications(token);
-        const unreadCount = res.filter(n => !n.read_status).length;
+        const res = await api.adminNotifications(token);
+        const unreadCount = res.items.filter(n => !n.read_status).length;
         setUnread(unreadCount);
       }
     } catch {
@@ -37,11 +37,25 @@ export function NotifBell({ testID = "notif-bell" }: { testID?: string }) {
     return () => clearInterval(t);
   }, [fetchCount]);
 
+  const handlePress = () => {
+    if (user?.role === "admin") {
+      router.push("/(admin)/notifications" as any);
+    } else {
+      // For student: navigate to the standalone /notifications page.
+      // On web, use window.location to avoid expo-router resolving within tab groups.
+      if (Platform.OS === "web" && typeof window !== "undefined") {
+        window.location.href = "/notifications";
+      } else {
+        router.push("/notifications" as any);
+      }
+    }
+  };
+
   return (
     <TouchableOpacity
       testID={testID}
       activeOpacity={0.85}
-      onPress={() => router.push(user?.role === "admin" ? "/(admin)/notifications" as any : "/notifications" as any)}
+      onPress={handlePress}
       style={[styles.btn, { backgroundColor: c.inputBg }]}
       hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
     >
@@ -76,3 +90,4 @@ const styles = StyleSheet.create({
   },
   badgeText: { ...typography.caption, color: "#fff", fontWeight: "700", fontSize: 10 },
 });
+

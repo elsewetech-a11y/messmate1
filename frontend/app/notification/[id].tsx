@@ -7,6 +7,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { api } from "@/src/api/client";
 import { useAuth } from "@/src/auth/AuthContext";
 import { radius, shadow, spacing, typography, useTheme } from "@/src/theme";
+import { formatISOasDateTimeIST } from "@/src/utils/istDate";
 
 export default function NotificationDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -30,8 +31,8 @@ export default function NotificationDetail() {
         
         if (found) {
           setNotification(found);
-          if (!found.read && user?.role !== "admin") {
-            api.markNotifRead(token, id).catch(() => {});
+          if (!found.read_status && user?.role !== "admin") {
+            api.markStudentNotifRead(token, id).catch(() => {});
           }
         } else {
           setError("Notification not found");
@@ -87,7 +88,7 @@ export default function NotificationDetail() {
               </View>
               <View style={styles.metaRow}>
                 <Text style={[styles.dateText, { color: c.textSecondary }]}>
-                  {new Date(notification.created_at).toLocaleString()}
+                  {formatISOasDateTimeIST(notification.created_at)}
                 </Text>
                 <View style={[styles.badge, { backgroundColor: c.inputBg }]}>
                   <Text style={[styles.badgeText, { color: c.textSecondary }]}>
@@ -104,7 +105,7 @@ export default function NotificationDetail() {
             <View style={[styles.divider, { backgroundColor: c.border }]} />
             
             <Text style={[styles.body, { color: c.textSecondary }]}>
-              {notification.body}
+              {notification.message}
             </Text>
             
             {user?.role !== "admin" && (

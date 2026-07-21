@@ -7,13 +7,14 @@ import type { BillingCycle } from "../hooks/useSubscriptionCalculator";
 
 type StudentSliderProps = {
   students: number;
+  minStudents?: number;
   onSliderChange: (val: number) => void;
   onInputChange: (val: number) => void;
   onInputBlur: () => void;
   billingCycle?: BillingCycle;
 };
 
-export function StudentSlider({ students, onSliderChange, onInputChange, onInputBlur, billingCycle = "monthly" }: StudentSliderProps) {
+export function StudentSlider({ students, minStudents = PRICING_CONFIG.MIN_STUDENTS, onSliderChange, onInputChange, onInputBlur, billingCycle = "monthly" }: StudentSliderProps) {
   const { c, mode } = useTheme();
   const styles = useMemo(() => makeStyles(c), [c]);
 
@@ -27,13 +28,13 @@ export function StudentSlider({ students, onSliderChange, onInputChange, onInput
     }
   };
 
-  const isInvalid = students < PRICING_CONFIG.MIN_STUDENTS || students > PRICING_CONFIG.MAX_STUDENTS;
+  const isInvalid = students < minStudents || students > PRICING_CONFIG.MAX_STUDENTS;
   const isValid = !isInvalid && students > 0;
 
   // Calculate live price for display
   const livePrice = billingCycle === "monthly"
-    ? calculateMonthlyPrice(isValid ? students : PRICING_CONFIG.MIN_STUDENTS)
-    : calculateYearlyPrice(isValid ? students : PRICING_CONFIG.MIN_STUDENTS);
+    ? calculateMonthlyPrice(isValid ? students : minStudents)
+    : calculateYearlyPrice(isValid ? students : minStudents);
 
   return (
     <View style={styles.card}>
@@ -54,10 +55,10 @@ export function StudentSlider({ students, onSliderChange, onInputChange, onInput
       <View style={styles.sliderContainer}>
         <Slider
           style={{ width: "100%", height: 40 }}
-          minimumValue={PRICING_CONFIG.MIN_STUDENTS}
+          minimumValue={minStudents}
           maximumValue={PRICING_CONFIG.MAX_STUDENTS}
           step={1}
-          value={students >= PRICING_CONFIG.MIN_STUDENTS && students <= PRICING_CONFIG.MAX_STUDENTS ? students : PRICING_CONFIG.MIN_STUDENTS}
+          value={students >= minStudents && students <= PRICING_CONFIG.MAX_STUDENTS ? students : minStudents}
           onValueChange={onSliderChange}
           minimumTrackTintColor={c.primary}
           maximumTrackTintColor={c.border}
@@ -65,7 +66,7 @@ export function StudentSlider({ students, onSliderChange, onInputChange, onInput
           testID="student-slider"
         />
         <View style={styles.sliderLabels}>
-          <Text style={styles.sliderLabelText}>{PRICING_CONFIG.MIN_STUDENTS}</Text>
+          <Text style={styles.sliderLabelText}>{minStudents.toLocaleString()}</Text>
           <Text style={styles.sliderLabelText}>{PRICING_CONFIG.MAX_STUDENTS.toLocaleString()}</Text>
         </View>
       </View>
@@ -79,15 +80,15 @@ export function StudentSlider({ students, onSliderChange, onInputChange, onInput
           value={students === 0 ? "" : students.toString()}
           onChangeText={handleTextChange}
           onBlur={onInputBlur}
-          placeholder={PRICING_CONFIG.MIN_STUDENTS.toString()}
+          placeholder={minStudents.toString()}
           placeholderTextColor={c.textTertiary}
         />
       </View>
 
       {students === 0 ? (
         <Text style={styles.errorText}>Please enter the total number of students.</Text>
-      ) : students < PRICING_CONFIG.MIN_STUDENTS ? (
-        <Text style={styles.errorText}>Minimum subscription size is {PRICING_CONFIG.MIN_STUDENTS} students.</Text>
+      ) : students < minStudents ? (
+        <Text style={styles.errorText}>Minimum subscription size is {minStudents.toLocaleString()} students.</Text>
       ) : students > PRICING_CONFIG.MAX_STUDENTS ? (
         <Text style={styles.errorText}>Maximum supported subscription size is {PRICING_CONFIG.MAX_STUDENTS.toLocaleString()} students.</Text>
       ) : null}

@@ -4,6 +4,11 @@ Multi-tenant: every domain doc is scoped by `hostel` (institution_or_hostel_name
 Two-step login with mocked OTP. In-app notifications + push token capture.
 """
 
+from security import rate_limit
+from email.utils import formataddr as _formataddr
+from email.message import EmailMessage as _EmailMessage
+import base64 as _base64
+import re as _re
 import asyncio
 import logging
 import os
@@ -50,9 +55,12 @@ SMTP_HOST = os.environ.get("SMTP_HOST", "").strip()
 SMTP_PORT = int(os.environ.get("SMTP_PORT", "") or "587")
 SMTP_USER = os.environ.get("SMTP_USER", "").strip()
 SMTP_PASS = os.environ.get("SMTP_PASS", "").strip()
-FROM_EMAIL = os.environ.get("FROM_EMAIL", SMTP_USER).strip()
+FROM_EMAIL = os.environ.get("FROM_EMAIL", "").strip()
 FROM_NAME = os.environ.get("FROM_NAME", "MessMate").strip() or "MessMate"
-SMTP_CONFIGURED = all([SMTP_HOST, SMTP_USER, SMTP_PASS, FROM_EMAIL])
+GMAIL_CLIENT_ID = os.environ.get("GMAIL_CLIENT_ID", "").strip()
+GMAIL_CLIENT_SECRET = os.environ.get("GMAIL_CLIENT_SECRET", "").strip()
+GMAIL_REFRESH_TOKEN = os.environ.get("GMAIL_REFRESH_TOKEN", "").strip()
+GMAIL_CONFIGURED = all([GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN, FROM_EMAIL])
 
 # OTP config
 OTP_LENGTH = int(os.environ.get("OTP_LENGTH", "6"))
@@ -76,7 +84,10 @@ wastage_col = db["wastage_records"]
 necessary_info_col = db["necessary_info"]
 settings_col = db["app_settings"]
 notifications_col = db["notifications"]
+admin_notifications_col = db["admin_notifications"]
+student_notifications_col = db["student_notifications"]
 scheduled_notifications_col = db["scheduled_notifications"]
+notification_logs_col = db["notification_logs"]
 email_otps_col = db["email_otps"]
 push_tokens_col = db["push_tokens"]
 pending_requests_col = db["pending_requests"]
@@ -87,9 +98,11 @@ transactions_col = db["transactions"]
 invoices_col = db["invoices"]
 communication_logs_col = db["communication_logs"]
 activity_logs_col = db["activity_logs"]
+audit_logs_col = db["audit_logs"]
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
+oauth2_scheme = OAuth2PasswordBearer(
+    tokenUrl="/api/auth/login", auto_error=False)
 
 # Shared async HTTP client (push relay).
 _push_client: Optional[httpx.AsyncClient] = None
@@ -105,11 +118,12 @@ def get_push_client() -> httpx.AsyncClient:
         )
     return _push_client
 
+
 app = FastAPI(title="MessMate API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origin_regex=".*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -117,7 +131,9 @@ app.add_middleware(
 
 api = APIRouter(prefix="/api")
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("messmate")
 
 
@@ -125,18 +141,25 @@ logger = logging.getLogger("messmate")
 # Models
 # ---------------------------------------------------------------------------
 Role = Literal["student", "admin"]
-ApprovalStatus = Literal["pending", "approved", "rejected_or_blocked"]
+ApprovalStatus = Literal["pending", "approved", "blocked"]
 MealStatus = Literal["ON", "OFF"]
 MealType = Literal["breakfast", "lunch", "dinner"]
 Reaction = Literal["like", "dislike", "no_response"]
 Unit = Literal["pieces", "grams", "kg", "ml", "litres"]
-SubscriptionStatus = Literal["TRIAL_ACTIVE", "ACTIVE", "TRIAL_EXPIRED", "SUBSCRIPTION_EXPIRED", "PAYMENT_PENDING", "SUSPENDED"]
+SubscriptionStatus = Literal["TRIAL_ACTIVE",
+                             "ACTIVE",
+                             "TRIAL_EXPIRED",
+                             "SUBSCRIPTION_EXPIRED",
+                             "PAYMENT_PENDING",
+                             "SUSPENDED"]
+
 
 class BillingContact(BaseModel):
     name: str
     designation: str
     email: str
     phone_number: str
+
 
 class SubscriptionPublic(BaseModel):
     institution_or_hostel_name: str
@@ -150,6 +173,7 @@ class SubscriptionPublic(BaseModel):
     plan_type: Optional[str] = None
     auto_renew: bool = False
 
+
 class SubscriptionEventPublic(BaseModel):
     id: str
     institution_or_hostel_name: str
@@ -158,20 +182,22 @@ class SubscriptionEventPublic(BaseModel):
     details: dict
 
 
-
 class OrderCreateRequest(BaseModel):
     plan_type: Literal["monthly", "yearly"]
     student_count: int
+
 
 class OrderCreateResponse(BaseModel):
     order_id: str
     amount: float
     currency: str
 
+
 class PaymentVerifyRequest(BaseModel):
     order_id: str
     payment_id: str
     signature: str
+
 
 class TransactionPublic(BaseModel):
     id: str
@@ -189,6 +215,7 @@ class TransactionPublic(BaseModel):
     error_message: Optional[str] = None
     action: Optional[str] = None
 
+
 class InvoicePublic(BaseModel):
     id: str
     invoice_number: str
@@ -202,16 +229,42 @@ class InvoicePublic(BaseModel):
     subscription_period: str
     payment_date: str
 
+
 class NotificationPublic(BaseModel):
     id: str
     institution_or_hostel_name: str
     admin_id: Optional[str] = None
-    category: Literal["TRIAL", "SUBSCRIPTION", "PAYMENT", "CAPACITY", "SYSTEM", "SECURITY"]
+    category: Literal["TRIAL", "SUBSCRIPTION",
+                      "PAYMENT", "CAPACITY", "SYSTEM", "SECURITY"]
     title: str
     description: str
     created_at: str
     read_status: bool = False
     action_url: Optional[str] = None
+
+
+class StudentNotificationPublic(BaseModel):
+    id: str
+    title: str
+    message: str
+    date: str
+    time: str
+    created_at: str
+    read_status: bool = False
+
+
+class ScheduledNotificationPublic(BaseModel):
+    id: Optional[str] = None
+    title: str
+    message: str
+    notificationType: Literal["Immediate", "Scheduled"]
+    daysSelection: Optional[list[str]] = None
+    scheduledTime: Optional[str] = None
+    repeatOption: Optional[Literal["Send Once", "Repeat Weekly", "Repeat Every Selected Day"]] = None
+    isActive: bool = True
+    created_at: Optional[str] = None
+    lastSentAt: Optional[str] = None
+
 
 class CommunicationPreferences(BaseModel):
     email_notifications: bool = True
@@ -220,7 +273,6 @@ class CommunicationPreferences(BaseModel):
     renewal_reminders: bool = True
     payment_confirmations: bool = True
     invoice_emails: bool = True
-
 
 
 class StudentRegisterRequest(BaseModel):
@@ -240,6 +292,10 @@ class RegisterRequest(BaseModel):
     confirm_password: Optional[str] = None
     institution_or_hostel_name: str = Field(..., min_length=1, max_length=120)
     role: Optional[Literal["student", "admin"]] = "student"
+    department: Optional[str] = None
+    academic_year: Optional[str] = None
+    roll_number: Optional[str] = None
+    room_number: Optional[str] = None
 
 
 class LoginRequest(BaseModel):
@@ -262,7 +318,7 @@ class ForgotPasswordRequest(BaseModel):
 
 
 class ForgotPasswordVerifyRequest(BaseModel):
-    email: str
+    email: EmailStr
     otp: str
 
 
@@ -270,6 +326,16 @@ class ResetPasswordRequest(BaseModel):
     reset_token: str
     new_password: str = Field(..., min_length=6, max_length=128)
     confirm_password: Optional[str] = None
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str = Field(..., min_length=8)
+
+class NotificationSettingsPayload(BaseModel):
+    push_notifications: bool
+    in_app_notifications: bool
+    sound: bool
+    vibration: bool
 
 
 class UserPublic(BaseModel):
@@ -284,6 +350,9 @@ class UserPublic(BaseModel):
     email_verified: bool = False
     created_at: str
     updated_at: str
+    department: Optional[str] = None
+    academic_year: Optional[str] = None
+    roll_number: Optional[str] = None
 
 
 class TokenResponse(BaseModel):
@@ -357,10 +426,12 @@ class WastageUpsert(BaseModel):
 class AppSettingsInput(BaseModel):
     default_meal_state: Optional[Literal["ON", "OFF"]] = None
     default_like_dislike_state: Optional[Reaction] = None
-    default_preference_state: Optional[Literal["none", "all", "previous"]] = None
+    default_preference_state: Optional[Literal["none",
+                                               "all", "previous"]] = None
     notifications_enabled: Optional[bool] = None
     language: Optional[str] = None
-    reminder_times: Optional[List[str]] = None  # e.g. ["07:00", "11:30", "18:00"]
+    # e.g. ["07:00", "11:30", "18:00"]
+    reminder_times: Optional[List[str]] = None
 
 
 class PushTokenInput(BaseModel):
@@ -387,8 +458,10 @@ class NotificationCreate(BaseModel):
     recipient_id: Optional[str] = None
     type: Literal["announcement", "menu_reminder", "system"] = "announcement"
     action_url: Optional[str] = None
-    scheduled_for: Optional[str] = None  # ISO date (legacy label — display only)
-    send_at: Optional[str] = None  # ISO datetime — when to actually fire the push
+    # ISO date (legacy label — display only)
+    scheduled_for: Optional[str] = None
+    # ISO datetime — when to actually fire the push
+    send_at: Optional[str] = None
 
 
 class MenuReminderCreate(BaseModel):
@@ -404,11 +477,13 @@ class RecurringNotificationCreate(BaseModel):
     startDate: str = Field(..., description="YYYY-MM-DD")
     endDate: Optional[str] = Field(default=None, description="YYYY-MM-DD")
 
+
 class RecurringNotificationUpdate(BaseModel):
     title: Optional[str] = Field(default=None, min_length=1, max_length=140)
     message: Optional[str] = Field(default=None, min_length=1, max_length=1000)
     notificationType: Optional[Literal["Daily", "Weekly", "One Time"]] = None
-    scheduledTime: Optional[str] = Field(default=None, description="HH:MM format in 24hr")
+    scheduledTime: Optional[str] = Field(
+        default=None, description="HH:MM format in 24hr")
     startDate: Optional[str] = Field(default=None, description="YYYY-MM-DD")
     endDate: Optional[str] = Field(default=None, description="YYYY-MM-DD")
     isActive: Optional[bool] = None
@@ -420,8 +495,7 @@ DEFAULT_REMINDER_BODY = (
     "Hi! Please open MessMate and mark whether you'll be eating today's meals "
     "and pick the items you'd like. This helps the mess cook the right quantity "
     "and cut down on food waste. It only takes a few seconds — thank you for "
-    "participating!"
-)
+    "participating!")
 
 
 # ---------------------------------------------------------------------------
@@ -431,7 +505,14 @@ REASONS = [
     "Going home", "Eating outside", "Not hungry", "Class/Event",
     "Sick", "Don't like today's menu", "Other",
 ]
-DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+DAYS = [
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday"]
 DEFAULT_HOSTEL = "Demo Hostel"
 
 
@@ -515,13 +596,15 @@ SESSION_INVALIDATED_DETAIL = {
 }
 
 
-async def get_current_user(token: Optional[str] = Depends(oauth2_scheme)) -> dict:
+async def get_current_user(
+        token: Optional[str] = Depends(oauth2_scheme)) -> dict:
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         if payload.get("type") == "challenge":
-            raise HTTPException(status_code=401, detail="Challenge token not allowed here")
+            raise HTTPException(status_code=401,
+                                detail="Challenge token not allowed here")
         uid = payload.get("sub")
         if not uid:
             raise HTTPException(status_code=401, detail="Invalid token")
@@ -548,19 +631,66 @@ async def rotate_session(user_id: str) -> str:
     return sid
 
 
-async def require_approved_student(u: dict = Depends(get_current_user)) -> dict:
+async def require_approved_student(
+        u: dict = Depends(get_current_user)) -> dict:
     if u["role"] != "student":
         raise HTTPException(status_code=403, detail="Student access required")
+    if u["approval_status"] == "blocked":
+        raise HTTPException(status_code=403, detail="Your access has been blocked by the hostel administrator.")
     if u["approval_status"] != "approved":
         raise HTTPException(status_code=403, detail="Student is not approved")
-    
-    sub = await get_subscription_status(u["institution_or_hostel_name"])
+
+    # Always resolve the subscription through the Admin's record, not the student's
+    # institution string (which may have been typed differently at registration).
+    check_name = u.get("institution_or_hostel_name", "")
+    admin_id = u.get("admin_id")
+    if admin_id:
+        admin = await users_col.find_one({"id": admin_id}, {"_id": 0, "institution_or_hostel_name": 1})
+        if admin:
+            check_name = admin.get("institution_or_hostel_name", check_name)
+    else:
+        # Fallback: try to resolve admin by matching institution name
+        admin = await users_col.find_one(
+            {"role": "admin", "institution_or_hostel_name": check_name},
+            {"_id": 0, "institution_or_hostel_name": 1, "id": 1}
+        )
+        if admin:
+            check_name = admin.get("institution_or_hostel_name", check_name)
+            u["admin_id"] = admin["id"]
+
+    sub = await get_subscription_status(check_name)
     if sub["status"] in ["TRIAL_EXPIRED", "SUBSCRIPTION_EXPIRED", "SUSPENDED"]:
-        raise HTTPException(status_code=403, detail="SUBSCRIPTION_EXPIRED")
-        
+        raise HTTPException(
+            status_code=403,
+            detail="Your hostel administration does not currently have an active subscription. Please contact your hostel administrator."
+        )
+
     return u
 
-async def log_activity(request: Optional[Request], user_id: str, role: str, institution: str, action: str, details: str = ""):
+@api.post("/auth/change-password")
+async def change_password(payload: ChangePasswordRequest, u: dict = Depends(get_current_user)):
+    user = await users_col.find_one({"id": u["id"]}, {"password_hash": 1})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    if not verify_password(payload.current_password, user["password_hash"]):
+        raise HTTPException(status_code=400, detail="Incorrect current password.")
+        
+    new_hash = hash_password(payload.new_password)
+    now = datetime.now(IST).isoformat()
+    await users_col.update_one(
+        {"id": u["id"]},
+        {"$set": {"password_hash": new_hash, "updated_at": now}}
+    )
+    return {"ok": True}
+
+async def log_activity(
+        request: Optional[Request],
+        user_id: str,
+        role: str,
+        institution: str,
+        action: str,
+        details: str = ""):
     await activity_logs_col.insert_one({
         "id": str(uuid.uuid4()),
         "user_id": user_id,
@@ -572,50 +702,79 @@ async def log_activity(request: Optional[Request], user_id: str, role: str, inst
         "timestamp": now_iso()
     })
 
+
 def require_permission(permission: str):
     async def permission_checker(u: dict = Depends(get_current_user)) -> dict:
         from security import has_permission, Role
         if not has_permission(u.get("role", ""), permission):
             # Special case for global admins who bypass institution checks
-            if u.get("role", "").upper() in [Role.SUPER_ADMIN.value, Role.FINANCE_ADMIN.value]:
+            if u.get(
+                    "role",
+                    "").upper() in [
+                    Role.SUPER_ADMIN.value,
+                    Role.FINANCE_ADMIN.value]:
                 pass
             else:
-                raise HTTPException(status_code=403, detail=f"Permission denied: Requires {permission}")
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Permission denied: Requires {permission}")
         return u
     return permission_checker
 
-async def require_tenant_access(institution_name: str, u: dict = Depends(get_current_user)):
+
+async def require_tenant_access(
+        institution_name: str,
+        u: dict = Depends(get_current_user)):
     from security import Role
     user_role = u.get("role", "").upper()
-    if user_role in [Role.SUPER_ADMIN.value, Role.FINANCE_ADMIN.value, Role.SUPPORT_ADMIN.value]:
-        return True # Global roles can access any tenant
-        
+    if user_role in [
+            Role.SUPER_ADMIN.value,
+            Role.FINANCE_ADMIN.value,
+            Role.SUPPORT_ADMIN.value]:
+        return True  # Global roles can access any tenant
+
     if u.get("institution_or_hostel_name") != institution_name:
-        raise HTTPException(status_code=403, detail="Tenant isolation violation")
+        raise HTTPException(
+            status_code=403,
+            detail="Tenant isolation violation")
     return True
 
 # Legacy admin requirement
-async def require_admin(u: dict = Depends(require_permission("MANAGE_STUDENTS"))) -> dict:
+
+
+async def require_admin(u: dict = Depends(
+        require_permission("MANAGE_STUDENTS"))) -> dict:
     return u
 
 
 async def get_subscription_status(institution_name: str) -> dict:
     from datetime import datetime, timezone
+    import math
     sub = await subscriptions_col.find_one({"institution_or_hostel_name": institution_name}, {"_id": 0})
-    student_count = await users_col.count_documents({"institution_or_hostel_name": institution_name, "role": "student"})
-    
+    student_count = await users_col.count_documents({"institution_or_hostel_name": institution_name, "role": "student", "approval_status": "approved"})
+
     if not sub:
         # Default to inactive if not found (legacy institutions)
-        return {"status": "SUBSCRIPTION_EXPIRED", "days_remaining": 0, "is_trial": False, "student_limit": 500, "registered_students": student_count, "expiry_date": None}
-    
+        return {
+            "institution_or_hostel_name": institution_name,
+            "status": "SUBSCRIPTION_EXPIRED",
+            "days_remaining": 0,
+            "is_trial": False,
+            "student_limit": 500,
+            "registered_students": student_count,
+            "expiry_date": None,
+            "billing_contact": None,
+            "plan_type": None,
+            "auto_renew": False}
+
     status = sub["status"]
     is_trial = sub["is_trial"]
     days_remaining = 0
-    now_dt = datetime.now(timezone.utc)
-    
+    now_dt = datetime.now(IST)
+
     if is_trial and sub["trial_end_date"]:
         end_dt = datetime.fromisoformat(sub["trial_end_date"])
-        diff = (end_dt - now_dt).days
+        diff = math.ceil((end_dt - now_dt).total_seconds() / 86400)
         if diff < 0:
             status = "TRIAL_EXPIRED"
             days_remaining = 0
@@ -624,7 +783,7 @@ async def get_subscription_status(institution_name: str) -> dict:
             days_remaining = diff
     elif not is_trial and sub["subscription_end_date"]:
         end_dt = datetime.fromisoformat(sub["subscription_end_date"])
-        diff = (end_dt - now_dt).days
+        diff = math.ceil((end_dt - now_dt).total_seconds() / 86400)
         if diff < 0:
             status = "SUBSCRIPTION_EXPIRED"
             days_remaining = 0
@@ -633,6 +792,7 @@ async def get_subscription_status(institution_name: str) -> dict:
             days_remaining = diff
 
     return {
+        "institution_or_hostel_name": institution_name,
         "status": status,
         "is_trial": is_trial,
         "days_remaining": days_remaining,
@@ -641,15 +801,17 @@ async def get_subscription_status(institution_name: str) -> dict:
         "expiry_date": sub["trial_end_date"] if is_trial else sub["subscription_end_date"],
         "billing_contact": sub.get("billing_contact"),
         "plan_type": sub.get("plan_type"),
-        "auto_renew": sub.get("auto_renew", False)
-    }
+        "auto_renew": sub.get(
+            "auto_renew",
+            False)}
 
-async def require_active_subscription_admin(u: dict = Depends(require_admin)) -> dict:
+
+async def require_active_subscription_admin(
+        u: dict = Depends(require_admin)) -> dict:
     sub = await get_subscription_status(u["institution_or_hostel_name"])
     if sub["status"] in ["TRIAL_EXPIRED", "SUBSCRIPTION_EXPIRED", "SUSPENDED"]:
         raise HTTPException(status_code=403, detail="SUBSCRIPTION_EXPIRED")
     return u
-
 
 
 def project_menu(d: dict) -> dict:
@@ -679,11 +841,6 @@ def project_plan(d: Optional[dict]) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 # SMTP — Email OTP delivery
 # ---------------------------------------------------------------------------
-import re as _re
-import smtplib as _smtplib
-from email.message import EmailMessage as _EmailMessage
-from email.utils import formataddr as _formataddr
-from fastapi.concurrency import run_in_threadpool as _run_in_threadpool
 
 EMAIL_RE = _re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
 
@@ -771,43 +928,147 @@ def _build_forgot_email(user_name: str, otp: str) -> _EmailMessage:
     return msg
 
 
-def _smtp_send_sync(to: str, msg: _EmailMessage) -> None:
+async def _get_gmail_access_token() -> str:
+    """Exchange refresh token for an access token."""
+    url = "https://oauth2.googleapis.com/token"
+    payload = {
+        "client_id": GMAIL_CLIENT_ID,
+        "client_secret": GMAIL_CLIENT_SECRET,
+        "refresh_token": GMAIL_REFRESH_TOKEN,
+        "grant_type": "refresh_token",
+    }
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.post(url, data=payload)
+    if resp.status_code != 200:
+        raise RuntimeError(f"Failed to refresh Gmail token: {resp.status_code} {resp.text}")
+    return resp.json()["access_token"]
+
+
+async def _gmail_send_async(
+    *, to: str, subject: str, html: str, text: str
+) -> None:
+    """Send email via Gmail HTTP API (port 443 — bypasses SMTP port blocks)."""
+    _TIMEOUT = 15.0
+    _MAX_RETRIES = 3
+    last_exc: Exception = RuntimeError("Unknown error")
+
+    # Construct the raw email message
+    msg = _EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = f"{FROM_NAME} <{FROM_EMAIL}>"
     msg["To"] = to
-    # Use STARTTLS on 587 (Gmail). Use SSL on 465.
-    if SMTP_PORT == 465:
-        with _smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=15) as server:
-            server.login(SMTP_USER, SMTP_PASS)
-            server.send_message(msg)
-    else:
-        with _smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as server:
-            server.ehlo()
-            server.starttls()
-            server.ehlo()
-            server.login(SMTP_USER, SMTP_PASS)
-            server.send_message(msg)
+    msg.set_content(text)
+    msg.add_alternative(html, subtype="html")
+
+    # Gmail API requires URL-safe base64 encoding
+    raw_msg = _base64.urlsafe_b64encode(msg.as_bytes()).decode('utf-8')
+
+    for attempt in range(1, _MAX_RETRIES + 1):
+        try:
+            # Refresh token on every attempt to ensure it's valid
+            access_token = await _get_gmail_access_token()
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+            }
+            url = f"https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
+            
+            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+                resp = await client.post(
+                    url, 
+                    json={"raw": raw_msg}, 
+                    headers=headers
+                )
+            
+            if resp.status_code in (200, 201):
+                logger.info("Gmail: email sent to=%s attempt=%d id=%s", to, attempt, resp.json().get("id"))
+                return  # success
+            
+            err_body = resp.text
+            raise RuntimeError(f"Gmail API error {resp.status_code}: {err_body}")
+        except Exception as e:
+            last_exc = e
+            logger.warning(
+                "Gmail API attempt %d/%d failed to=%s err=%s",
+                attempt, _MAX_RETRIES, to, e
+            )
+            if attempt < _MAX_RETRIES:
+                await asyncio.sleep(2 ** (attempt - 1))  # 1s then 2s backoff
+
+    raise last_exc
 
 
 async def send_email_otp(
     *, to: str, user_name: str, otp: str, purpose: str
-) -> bool:
-    """Send an OTP via SMTP. Returns True on success, False on failure.
-
-    When SMTP is NOT configured, we log the OTP to backend stdout (dev mode).
-    """
-    if not SMTP_CONFIGURED:
+) -> Optional[str]:
+    """Send an OTP email via Gmail API. Returns None on success, error string on failure."""
+    if not GMAIL_CONFIGURED:
         logger.warning(
-            "[DEV-OTP] purpose=%s to=%s otp=%s (SMTP not configured — set SMTP_HOST/USER/PASS)",
+            "[DEV-OTP] purpose=%s to=%s otp=%s (Gmail not configured — missing env vars)",
             purpose, to, otp,
         )
-        return True
-    builder = _build_forgot_email if purpose == "forgot_password" else _build_registration_email
-    msg = builder(user_name, otp)
+        return None
+
+    if purpose == "forgot_password":
+        subject = "Your MessMate Verification Code"
+        text = (
+            f"Hello {user_name},\n\n"
+            f"Your password reset code is:\n\n"
+            f"{otp}\n\n"
+            f"This OTP is valid for {OTP_EXPIRY_MIN} minutes.\n\n"
+            f"If you did not request this code, please ignore this email.\n\n"
+            f"Regards,\nMessMate Team"
+        )
+        html = (
+            f'<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;'
+            f'max-width:520px;margin:auto;padding:32px;color:#0B1220">'
+            f'<h2 style="margin:0 0 16px">Password Reset</h2>'
+            f'<p>Hello <strong>{user_name}</strong>,</p>'
+            f'<p>Your password reset code is:</p>'
+            f'<div style="font-size:36px;font-weight:700;letter-spacing:10px;'
+            f'background:#FEF2F2;color:#B91C1C;padding:20px 24px;border-radius:12px;'
+            f'text-align:center;margin:24px 0">{otp}</div>'
+            f'<p style="color:#5B6675">This OTP is valid for <strong>{OTP_EXPIRY_MIN} minutes</strong>.</p>'
+            f'<p style="color:#5B6675;font-size:13px">If you did not request this code, please ignore this email.</p>'
+            f'<hr style="border:none;border-top:1px solid #E5E7EB;margin:24px 0" />'
+            f'<p style="color:#9CA3AF;font-size:12px">Regards,<br/><strong>MessMate Team</strong></p>'
+            f'</div>'
+        )
+    else:
+        subject = "Your MessMate Verification Code"
+        text = (
+            f"Hello {user_name},\n\n"
+            f"Your verification code is:\n\n"
+            f"{otp}\n\n"
+            f"This OTP is valid for {OTP_EXPIRY_MIN} minutes.\n\n"
+            f"If you did not request this code, please ignore this email.\n\n"
+            f"Regards,\nMessMate Team"
+        )
+        html = (
+            f'<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;'
+            f'max-width:520px;margin:auto;padding:32px;color:#0B1220">'
+            f'<h2 style="margin:0 0 16px">Verify your email</h2>'
+            f'<p>Hello <strong>{user_name}</strong>,</p>'
+            f'<p>Welcome to <strong>MessMate</strong>. Your verification code is:</p>'
+            f'<div style="font-size:36px;font-weight:700;letter-spacing:10px;'
+            f'background:#EAFBF0;color:#15803D;padding:20px 24px;border-radius:12px;'
+            f'text-align:center;margin:24px 0">{otp}</div>'
+            f'<p style="color:#5B6675">This OTP is valid for <strong>{OTP_EXPIRY_MIN} minutes</strong>.</p>'
+            f'<p style="color:#5B6675;font-size:13px">If you did not request this code, please ignore this email.</p>'
+            f'<hr style="border:none;border-top:1px solid #E5E7EB;margin:24px 0" />'
+            f'<p style="color:#9CA3AF;font-size:12px">Regards,<br/><strong>MessMate Team</strong></p>'
+            f'</div>'
+        )
+
     try:
-        await _run_in_threadpool(_smtp_send_sync, to, msg)
-        return True
+        await _gmail_send_async(to=to, subject=subject, html=html, text=text)
+        return None
     except Exception as e:
-        logger.error("SMTP send failed to=%s purpose=%s err=%s", to, purpose, e)
-        return False
+        logger.error(
+            "Gmail send failed to=%s purpose=%s err=%s",
+            to, purpose, e, exc_info=True
+        )
+        return str(e)
 
 
 # ---------------------------------------------------------------------------
@@ -831,7 +1092,8 @@ async def store_email_otp(*, email: str, purpose: str, otp: str) -> None:
     )
 
 
-async def consume_email_otp(*, email: str, purpose: str, submitted: str) -> Dict[str, Any]:
+async def consume_email_otp(
+        *, email: str, purpose: str, submitted: str) -> Dict[str, Any]:
     """Returns {ok, error?, doc?}.
 
     - ok=True only on exact match + not expired + not over-attempted.
@@ -851,7 +1113,9 @@ async def consume_email_otp(*, email: str, purpose: str, submitted: str) -> Dict
     # Attempts
     if doc.get("attempts", 0) >= OTP_MAX_VERIFY_ATTEMPTS:
         await email_otps_col.delete_one({"_id": doc["_id"]})
-        return {"ok": False, "error": "Too many attempts. Please request a new OTP."}
+        return {
+            "ok": False,
+            "error": "Too many attempts. Please request a new OTP."}
     # Match
     try:
         match = pwd_context.verify(submitted.strip(), doc["otp_hash"])
@@ -908,18 +1172,20 @@ async def send_push(
         try:
             resp = await cli.post("/api/v1/push/trigger", json=payload)
             if resp.status_code == 401:
-                logger.warning("EMERGENT_PUSH_KEY missing or invalid (push skipped)")
+                logger.warning(
+                    "EMERGENT_PUSH_KEY missing or invalid (push skipped)")
                 return
             if resp.status_code >= 400:
-                logger.warning("push trigger %s: %s", resp.status_code, resp.text[:200])
+                logger.warning("push trigger %s: %s",
+                               resp.status_code, resp.text[:200])
         except Exception as e:
-            logger.warning("push trigger failed (non-blocking): %s", e)
+            logger.warning("push trigger failed (non-blocking): %s", e, exc_info=True)
 
 
 # ---------------------------------------------------------------------------
 # Auth — Email OTP
 # ---------------------------------------------------------------------------
-from security import rate_limit
+
 
 @api.get("/")
 async def root():
@@ -931,7 +1197,8 @@ async def register(payload: RegisterRequest, _=Depends(rate_limit)):
     """Create unverified account + send email OTP."""
     email = normalize_email(payload.email)
     if not is_valid_email(email):
-        raise HTTPException(status_code=400, detail="Please enter a valid email address")
+        raise HTTPException(status_code=400,
+                            detail="Please enter a valid email address")
     if payload.confirm_password is not None and payload.password != payload.confirm_password:
         raise HTTPException(status_code=400, detail="Passwords do not match")
 
@@ -940,7 +1207,9 @@ async def register(payload: RegisterRequest, _=Depends(rate_limit)):
     existing = await users_col.find_one({"email": email}, {"_id": 0})
     if existing:
         if existing.get("email_verified"):
-            raise HTTPException(status_code=400, detail="Email already registered")
+            raise HTTPException(
+                status_code=400,
+                detail="Email already registered")
         # Legacy unverified users in users_col: refresh details
         now = now_iso()
         await users_col.update_one(
@@ -956,7 +1225,7 @@ async def register(payload: RegisterRequest, _=Depends(rate_limit)):
     else:
         now = now_iso()
         role = payload.role or "student"
-        
+
         # First admin to register for a brand-new institution auto-approves.
         is_first_admin = False
         if role == "admin":
@@ -965,21 +1234,30 @@ async def register(payload: RegisterRequest, _=Depends(rate_limit)):
                 "institution_or_hostel_name": payload.institution_or_hostel_name.strip(),
             })
             is_first_admin = count == 0
-            
+
         user_doc = {
-            "id": str(uuid.uuid4()),
+            "id": str(
+                uuid.uuid4()),
             "full_name": payload.full_name.strip(),
             "email": email,
             "mobile_or_user_id": email,
             "institution_or_hostel_name": payload.institution_or_hostel_name.strip(),
-            "password_hash": hash_password(payload.password),
+            "password_hash": hash_password(
+                payload.password),
             "role": role,
-            "approval_status": "approved" if (role == "admin" and is_first_admin) else "pending",
+            "approval_status": "approved" if (
+                role == "admin" and is_first_admin) else "pending",
             "email_verified": False,
             "created_at": now,
             "updated_at": now,
         }
-        
+
+        if role == "student":
+            user_doc["department"] = payload.department.strip() if payload.department else None
+            user_doc["academic_year"] = payload.academic_year.strip() if payload.academic_year else None
+            user_doc["roll_number"] = payload.roll_number.strip() if payload.roll_number else None
+            user_doc["room_number"] = payload.room_number.strip() if payload.room_number else None
+
         if role == "student":
             pending_existing = await pending_requests_col.find_one({"email": email})
             if pending_existing:
@@ -990,8 +1268,8 @@ async def register(payload: RegisterRequest, _=Depends(rate_limit)):
                 await pending_requests_col.insert_one(user_doc)
         else:
             if is_first_admin:
-                from datetime import datetime, timedelta, timezone
-                now_dt = datetime.now(timezone.utc)
+                from datetime import datetime, timedelta
+                now_dt = datetime.now(IST)
                 trial_end = now_dt + timedelta(days=10)
                 sub_doc = {
                     "institution_or_hostel_name": payload.institution_or_hostel_name.strip(),
@@ -1025,35 +1303,43 @@ async def register(payload: RegisterRequest, _=Depends(rate_limit)):
 
     otp = gen_otp()
     await store_email_otp(email=email, purpose="registration", otp=otp)
-    ok = await send_email_otp(
-        to=email, user_name=user_doc["full_name"], otp=otp, purpose="registration",
+    err = await send_email_otp(
+        to=email, user_name=user_doc["full_name"] if user_doc else payload.full_name, otp=otp, purpose="registration",
     )
-    if not ok and SMTP_CONFIGURED:
-        # roll back OTP record so user can retry
-        await email_otps_col.delete_one({"email": email, "purpose": "registration"})
-        raise HTTPException(status_code=502, detail="Could not send verification email. Please try again.")
-    return {
+    if err and GMAIL_CONFIGURED:
+        logger.error(
+            "Gmail API failed to send registration email to %s. Error: %s",
+            email, err)
+        raise HTTPException(
+            status_code=424,
+            detail=f"Failed to send email: {err}"
+        )
+
+    resp = {
         "status": "verification_required",
         "email": email,
         "resend_available_in": OTP_RESEND_INTERVAL_SEC,
         "expires_in": OTP_EXPIRY_MIN * 60,
     }
+    if not GMAIL_CONFIGURED:
+        resp["dev_otp"] = otp
+    return resp
 
 
 @api.post("/auth/verify-email", response_model=Dict[str, Any])
 async def verify_email(payload: VerifyEmailRequest):
     """Verify the registration OTP → mark verified → auto-login or wait for approval."""
     email = normalize_email(payload.email)
-    
+
     # Check users_col first (admins or previously approved users)
     user = await users_col.find_one({"email": email}, {"_id": 0})
     is_pending = False
-    
+
     if not user:
         # Check pending_requests_col for students
         user = await pending_requests_col.find_one({"email": email}, {"_id": 0})
         is_pending = True
-        
+
     if not user:
         raise HTTPException(status_code=404, detail="Account not found")
 
@@ -1062,7 +1348,9 @@ async def verify_email(payload: VerifyEmailRequest):
             return {"status": "pending_approval", "email": email}
         # Re-issue access token rather than failing.
         sid = await rotate_session(user["id"])
-        token = create_token({"sub": user["id"], "sid": sid, "role": user["role"],
+        token = create_token({"sub": user["id"],
+                              "sid": sid,
+                              "role": user["role"],
                               "status": user["approval_status"]})
         return {"access_token": token, "user": to_public(user)}
 
@@ -1075,7 +1363,7 @@ async def verify_email(payload: VerifyEmailRequest):
     now = now_iso()
     user["email_verified"] = True
     user["updated_at"] = now
-    
+
     if is_pending:
         await pending_requests_col.update_one(
             {"id": user["id"]},
@@ -1088,7 +1376,9 @@ async def verify_email(payload: VerifyEmailRequest):
             {"$set": {"email_verified": True, "updated_at": now}},
         )
         sid = await rotate_session(user["id"])
-        token = create_token({"sub": user["id"], "sid": sid, "role": user["role"],
+        token = create_token({"sub": user["id"],
+                              "sid": sid,
+                              "role": user["role"],
                               "status": user["approval_status"]})
         return {"access_token": token, "user": to_public(user)}
 
@@ -1098,11 +1388,13 @@ async def login_email(payload: LoginRequest, _=Depends(rate_limit)):
     """Single-step email + password login. Verified accounts get a token."""
     email = normalize_email(payload.email)
     user = await users_col.find_one({"email": email}, {"_id": 0})
-    
+
     if not user:
         # Check if they are pending
         pending = await pending_requests_col.find_one({"email": email}, {"_id": 0})
-        if pending and verify_password(payload.password, pending["password_hash"]):
+        if pending and verify_password(
+                payload.password,
+                pending["password_hash"]):
             if not pending.get("email_verified"):
                 raise HTTPException(
                     status_code=403,
@@ -1116,11 +1408,15 @@ async def login_email(payload: LoginRequest, _=Depends(rate_limit)):
                 status_code=403,
                 detail="Your account is pending admin approval. Please wait.",
             )
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-        
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid email or password")
+
     if not verify_password(payload.password, user["password_hash"]):
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-        
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid email or password")
+
     if not user.get("email_verified"):
         raise HTTPException(
             status_code=403,
@@ -1130,53 +1426,91 @@ async def login_email(payload: LoginRequest, _=Depends(rate_limit)):
                 "email": email,
             },
         )
+    
+    if user.get("approval_status") == "blocked":
+        raise HTTPException(
+            status_code=403,
+            detail="Your access has been blocked by the hostel administrator.",
+        )
+
+    if user.get("role") == "student" and user.get("approval_status") == "approved":
+        # Resolve subscription through Admin's account, not student's institution string.
+        # This prevents mismatches when the student typed the institution name differently.
+        check_name = user.get("institution_or_hostel_name", "")
+        admin_id = user.get("admin_id")
+        if admin_id:
+            admin = await users_col.find_one({"id": admin_id}, {"_id": 0, "institution_or_hostel_name": 1})
+            if admin:
+                check_name = admin.get("institution_or_hostel_name", check_name)
+        else:
+            # Fallback: resolve admin by institution name match (handles legacy records)
+            admin = await users_col.find_one(
+                {"role": "admin", "institution_or_hostel_name": check_name},
+                {"_id": 0, "institution_or_hostel_name": 1}
+            )
+            if admin:
+                check_name = admin.get("institution_or_hostel_name", check_name)
+
+        sub = await get_subscription_status(check_name)
+        if sub["status"] in ["TRIAL_EXPIRED", "SUBSCRIPTION_EXPIRED", "SUSPENDED"]:
+            raise HTTPException(
+                status_code=403,
+                detail="Your hostel administration does not currently have an active subscription. Please contact your hostel administrator."
+            )
+
     sid = await rotate_session(user["id"])
     token = create_token({"sub": user["id"], "sid": sid, "role": user["role"],
                           "status": user["approval_status"]})
-                          
+
     import asyncio
-    asyncio.create_task(log_activity(None, user["id"], user["role"], user.get("institution_or_hostel_name", ""), "LOGIN_SUCCESS"))
-    
-    return {
-        "access_token": token,
-        "token_type": "bearer",
-        "refresh_token": create_token({"sub": str(user["id"]), "type": "refresh"}, minutes=7*24*60),
-        "user": to_public(user)
-    }
+    asyncio.create_task(
+        log_activity(
+            None,
+            user["id"],
+            user["role"],
+            user.get(
+                "institution_or_hostel_name",
+                ""),
+            "LOGIN_SUCCESS"))
+
+    return {"access_token": token, "token_type": "bearer", "refresh_token": create_token(
+        {"sub": str(user["id"]), "type": "refresh"}, minutes=7 * 24 * 60), "user": to_public(user)}
+
 
 class RefreshRequest(BaseModel):
     refresh_token: str
 
+
 @api.post("/auth/refresh")
 async def refresh_token(payload: RefreshRequest, _=Depends(rate_limit)):
     try:
-        token_payload = jwt.decode(payload.refresh_token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        token_payload = jwt.decode(
+            payload.refresh_token,
+            JWT_SECRET,
+            algorithms=[JWT_ALGORITHM])
         if token_payload.get("type") != "refresh":
             raise HTTPException(status_code=401, detail="Invalid token type")
-            
+
         uid = token_payload.get("sub")
         if not uid:
             raise HTTPException(status_code=401, detail="Invalid token")
-            
+
         user = await get_user_by_id(uid)
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
-            
+
         new_sid = await rotate_session(uid)
         new_token = create_token({
             "sub": str(user["id"]),
             "role": user["role"],
             "sid": new_sid
         })
-        
-        return {
-            "access_token": new_token,
-            "token_type": "bearer",
-            "refresh_token": create_token({"sub": str(user["id"]), "type": "refresh"}, minutes=7*24*60),
-            "user": to_public(user)
-        }
+
+        return {"access_token": new_token, "token_type": "bearer", "refresh_token": create_token(
+            {"sub": str(user["id"]), "type": "refresh"}, minutes=7 * 24 * 60), "user": to_public(user)}
     except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
+        raise HTTPException(status_code=401,
+                            detail="Invalid or expired refresh token")
 
 
 @api.post("/auth/resend-otp")
@@ -1187,15 +1521,18 @@ async def resend_otp(payload: ResendOtpEmailRequest):
     user = await users_col.find_one({"email": email}, {"_id": 0})
     if not user:
         user = await pending_requests_col.find_one({"email": email}, {"_id": 0})
-        
+
     if not user:
         # Don't leak existence for forgot password
         if purpose == "forgot_password":
-            return {"status": "ok", "resend_available_in": OTP_RESEND_INTERVAL_SEC}
+            return {
+                "status": "ok",
+                "resend_available_in": OTP_RESEND_INTERVAL_SEC}
         raise HTTPException(status_code=404, detail="Account not found")
 
     if purpose == "registration" and user.get("email_verified"):
-        raise HTTPException(status_code=400, detail="Email already verified. Please log in.")
+        raise HTTPException(status_code=400,
+                            detail="Email already verified. Please log in.")
 
     wait_s = await can_resend_otp(email=email, purpose=purpose)
     if wait_s is not None:
@@ -1206,12 +1543,17 @@ async def resend_otp(payload: ResendOtpEmailRequest):
 
     otp = gen_otp()
     await store_email_otp(email=email, purpose=purpose, otp=otp)
-    ok = await send_email_otp(
+    err = await send_email_otp(
         to=email, user_name=user["full_name"], otp=otp, purpose=purpose,
     )
-    if not ok and SMTP_CONFIGURED:
-        await email_otps_col.delete_one({"email": email, "purpose": purpose})
-        raise HTTPException(status_code=502, detail="Could not send email")
+    if err and GMAIL_CONFIGURED:
+        logger.error(
+            "Gmail API failed to send email to %s. Error: %s",
+            email, err)
+        raise HTTPException(
+            status_code=424,
+            detail=f"Failed to send email: {err}"
+        )
     return {"status": "ok", "resend_available_in": OTP_RESEND_INTERVAL_SEC,
             "expires_in": OTP_EXPIRY_MIN * 60}
 
@@ -1233,9 +1575,17 @@ async def forgot_password(payload: ForgotPasswordRequest):
 
     otp = gen_otp()
     await store_email_otp(email=email, purpose="forgot_password", otp=otp)
-    await send_email_otp(
+    err = await send_email_otp(
         to=email, user_name=user["full_name"], otp=otp, purpose="forgot_password",
     )
+    if err and SMTP_CONFIGURED:
+        logger.error(
+            "SMTP failed to send forgot password email to %s. Error: %s",
+            email, err)
+        raise HTTPException(
+            status_code=424,
+            detail=f"Failed to send email: {err}"
+        )
     return {"status": "ok", "resend_available_in": OTP_RESEND_INTERVAL_SEC,
             "expires_in": OTP_EXPIRY_MIN * 60}
 
@@ -1259,7 +1609,8 @@ async def forgot_password_verify(payload: ForgotPasswordVerifyRequest):
         {"sub": user["id"], "email": email, "type": "reset"},
         minutes=RESET_TOKEN_EXPIRY_MIN,
     )
-    return {"reset_token": reset_token, "expires_in": RESET_TOKEN_EXPIRY_MIN * 60}
+    return {"reset_token": reset_token,
+            "expires_in": RESET_TOKEN_EXPIRY_MIN * 60}
 
 
 @api.post("/auth/reset-password", response_model=TokenResponse)
@@ -1268,9 +1619,13 @@ async def reset_password(payload: ResetPasswordRequest):
     if payload.confirm_password is not None and payload.new_password != payload.confirm_password:
         raise HTTPException(status_code=400, detail="Passwords do not match")
     try:
-        decoded = jwt.decode(payload.reset_token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        decoded = jwt.decode(
+            payload.reset_token,
+            JWT_SECRET,
+            algorithms=[JWT_ALGORITHM])
     except JWTError:
-        raise HTTPException(status_code=400, detail="Reset link expired. Please start over.")
+        raise HTTPException(status_code=400,
+                            detail="Reset link expired. Please start over.")
     if decoded.get("type") != "reset":
         raise HTTPException(status_code=400, detail="Invalid reset token")
 
@@ -1296,16 +1651,29 @@ async def reset_password(payload: ResetPasswordRequest):
 async def me(u: dict = Depends(get_current_user)):
     return u
 
+
 @api.get("/subscription/status", response_model=SubscriptionPublic)
 async def get_sub_status(u: dict = Depends(require_admin)):
     sub = await get_subscription_status(u["institution_or_hostel_name"])
     return sub
 
+@api.get("/student/subscription/status", response_model=SubscriptionPublic)
+async def get_student_sub_status(u: dict = Depends(get_current_user)):
+    check_name = u.get("institution_or_hostel_name", "")
+    admin_id = u.get("admin_id")
+    if admin_id:
+        admin = await users_col.find_one({"id": admin_id}, {"_id": 0, "institution_or_hostel_name": 1})
+        if admin:
+            check_name = admin.get("institution_or_hostel_name", check_name)
+    sub = await get_subscription_status(check_name)
+    return sub
+
+
 @api.post("/subscription/renew")
 async def renew_subscription(u: dict = Depends(require_admin)):
     # Mocking a payment success and renewing for 30 days
     from datetime import datetime, timedelta, timezone
-    now_dt = datetime.now(timezone.utc)
+    now_dt = datetime.now(IST)
     new_end = now_dt + timedelta(days=30)
     await subscriptions_col.update_one(
         {"institution_or_hostel_name": u["institution_or_hostel_name"]},
@@ -1319,82 +1687,121 @@ async def renew_subscription(u: dict = Depends(require_admin)):
     )
     return {"success": True, "message": "Subscription renewed successfully"}
 
+
 @api.post("/subscription/order", response_model=OrderCreateResponse)
-async def create_subscription_order(payload: OrderCreateRequest, u: dict = Depends(require_admin)):
-    amount = payload.student_count * 2.0 if payload.plan_type == "monthly" else payload.student_count * 1.5 * 12
-    order_id = f"MM_ORDER_{uuid.uuid4().hex[:8].upper()}"
-    
-    doc = {
-        "id": str(uuid.uuid4()),
-        "institution_or_hostel_name": u["institution_or_hostel_name"],
-        "admin_id": u.get("id"),
-        "order_id": order_id,
-        "payment_id": None,
-        "provider": "mock",
-        "amount": amount,
-        "currency": "INR",
-        "status": "PENDING",
-        "transaction_date": None,
-        "plan_type": payload.plan_type,
-        "student_count": payload.student_count,
-        "action": "SUBSCRIPTION_PURCHASE",
-        "created_at": now_iso()
-    }
-    await transactions_col.insert_one(doc)
-    return {"order_id": order_id, "amount": amount, "currency": "INR"}
+async def create_subscription_order(
+        payload: OrderCreateRequest,
+        u: dict = Depends(require_admin)):
+    try:
+        amount = payload.student_count * \
+            3.0 if payload.plan_type == "monthly" else payload.student_count * 2.50
+        order_id = f"MM_ORDER_{uuid.uuid4().hex[:8].upper()}"
+
+        doc = {
+            "id": str(uuid.uuid4()),
+            "institution_or_hostel_name": u["institution_or_hostel_name"],
+            "admin_id": u.get("id"),
+            "order_id": order_id,
+            "payment_id": None,
+            "provider": "mock",
+            "amount": amount,
+            "currency": "INR",
+            "status": "PENDING",
+            "transaction_date": None,
+            "plan_type": payload.plan_type,
+            "student_count": payload.student_count,
+            "action": "SUBSCRIPTION_PURCHASE",
+            "created_at": now_iso()
+        }
+        await transactions_col.insert_one(doc)
+        return {"order_id": order_id, "amount": amount, "currency": "INR"}
+    except Exception as e:
+        logger.error(f"Error in create_subscription_order: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
 
 @api.post("/subscription/verify-payment")
-async def verify_payment(payload: PaymentVerifyRequest, u: dict = Depends(require_admin)):
-    from datetime import datetime, timedelta, timezone
-    
-    order = await transactions_col.find_one({"order_id": payload.order_id, "institution_or_hostel_name": u["institution_or_hostel_name"]})
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
-        
-    if order["status"] == "SUCCESS":
-        return {"success": True, "message": "Already verified"}
+async def verify_payment(
+        payload: PaymentVerifyRequest,
+        u: dict = Depends(require_admin)):
+    try:
+        from datetime import datetime, timedelta, timezone
 
-    # Mock signature verification
-    if payload.signature != "mock_signature":
-        await transactions_col.update_one({"id": order["id"]}, {"$set": {"status": "FAILED", "error_message": "Invalid signature"}})
-        raise HTTPException(status_code=400, detail="Invalid signature")
+        order = await transactions_col.find_one({"order_id": payload.order_id, "institution_or_hostel_name": u["institution_or_hostel_name"]})
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
 
-    now_dt = datetime.now(timezone.utc)
-    transaction_date = now_dt.isoformat()
-    
-    await transactions_col.update_one(
-        {"id": order["id"]}, 
-        {"$set": {
-            "status": "SUCCESS", 
-            "payment_id": payload.payment_id,
-            "transaction_date": transaction_date
-        }}
-    )
+        if order["status"] == "SUCCESS":
+            return {"success": True, "message": "Already verified"}
 
-    # Get current sub to compute dates properly
-    sub = await subscriptions_col.find_one({"institution_or_hostel_name": u["institution_or_hostel_name"]})
-    
+        # Mock signature verification
+        if payload.signature != "mock_signature":
+            await transactions_col.update_one({"id": order["id"]}, {"$set": {"status": "FAILED", "error_message": "Invalid signature"}})
+            raise HTTPException(status_code=400, detail="Invalid signature")
+
+        now_dt = datetime.now(IST)
+        transaction_date = now_dt.isoformat()
+
+        await transactions_col.update_one(
+            {"id": order["id"]},
+            {"$set": {
+                "status": "SUCCESS",
+                "payment_id": payload.payment_id,
+                "transaction_date": transaction_date
+            }}
+        )
+
+        # Get current sub to compute dates properly
+        sub = await subscriptions_col.find_one({"institution_or_hostel_name": u["institution_or_hostel_name"]})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in verify_payment: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
     is_upgrade = order.get("is_upgrade", False)
-    
+
     if is_upgrade:
         # For upgrades, don't change the dates, only capacity
         event_type = "CAPACITY_UPGRADE"
-        details = {"old_capacity": sub["student_limit"], "new_capacity": order["student_count"], "additional": order["additional_students"]}
-        
+        details = {
+            "old_capacity": sub["student_limit"],
+            "new_capacity": order["student_count"],
+            "additional": order["additional_students"]}
+
         await subscriptions_col.update_one(
             {"institution_or_hostel_name": u["institution_or_hostel_name"]},
-            {"$set": {
-                "student_limit": order["student_count"]
-            }}
+            {
+                "$set": {
+                    "student_limit": order["student_count"]
+                },
+                "$setOnInsert": {
+                    "id": str(uuid.uuid4()),
+                    "admin_id": u.get("id"),
+                    "status": "ACTIVE",
+                    "is_trial": False,
+                    "subscription_start_date": now_dt.isoformat(),
+                    "payment_status": "SUCCESS",
+                    "payment_method": "Dummy/Test Payment",
+                    "transaction_id": payload.payment_id or str(uuid.uuid4()),
+                    "registered_students": 0,
+                    "created_at": now_dt.isoformat(),
+                    "plan_type": order.get("plan_type", "monthly")
+                }
+            },
+            upsert=True
         )
-        new_end = datetime.fromisoformat(sub["subscription_end_date"]) if sub and sub.get("subscription_end_date") else now_dt
+        new_end = datetime.fromisoformat(sub["subscription_end_date"]) if sub and sub.get(
+            "subscription_end_date") else (now_dt + timedelta(days=30))
     else:
         # Renewal or New Subscription
         event_type = "SUBSCRIPTION_PURCHASED"
-        details = {"plan_type": order["plan_type"], "capacity": order["student_count"]}
-        
+        details = {
+            "plan_type": order["plan_type"],
+            "capacity": order["student_count"]}
+
         days_to_add = 30 if order["plan_type"] == "monthly" else 365
-        
+
         # Start adding days from current expiry if it is in the future
         current_end_str = sub.get("subscription_end_date") if sub else None
         if current_end_str:
@@ -1405,22 +1812,33 @@ async def verify_payment(payload: PaymentVerifyRequest, u: dict = Depends(requir
                 base_dt = now_dt
         else:
             base_dt = now_dt
-            
+
         new_end = base_dt + timedelta(days=days_to_add)
-        
+
         await subscriptions_col.update_one(
             {"institution_or_hostel_name": u["institution_or_hostel_name"]},
-            {"$set": {
-                "status": "ACTIVE",
-                "is_trial": False,
-                "subscription_start_date": now_dt.isoformat(),
-                "subscription_end_date": new_end.isoformat(),
-                "payment_status": "SUCCESS",
-                "student_limit": order["student_count"],
-                "plan_type": order["plan_type"]
-            }}
+            {
+                "$set": {
+                    "status": "ACTIVE",
+                    "is_trial": False,
+                    "subscription_start_date": now_dt.isoformat(),
+                    "subscription_end_date": new_end.isoformat(),
+                    "payment_status": "SUCCESS",
+                    "payment_method": "Dummy/Test Payment",
+                    "transaction_id": payload.payment_id or str(uuid.uuid4()),
+                    "student_limit": order["student_count"],
+                    "plan_type": order["plan_type"]
+                },
+                "$setOnInsert": {
+                    "id": str(uuid.uuid4()),
+                    "admin_id": u.get("id"),
+                    "registered_students": 0,
+                    "created_at": now_dt.isoformat()
+                }
+            },
+            upsert=True
         )
-        
+
     # Log the event
     await subscription_events_col.insert_one({
         "id": str(uuid.uuid4()),
@@ -1429,7 +1847,7 @@ async def verify_payment(payload: PaymentVerifyRequest, u: dict = Depends(requir
         "event_date": transaction_date,
         "details": details
     })
-    
+
     # Generate Invoice
     invoice_number = f"MM-INV-{uuid.uuid4().hex[:6].upper()}"
     invoice = {
@@ -1446,19 +1864,21 @@ async def verify_payment(payload: PaymentVerifyRequest, u: dict = Depends(requir
         "payment_date": transaction_date
     }
     await invoices_col.insert_one(invoice)
-    
+
     # Send Notification
     from services.notification_service import notify_institution
-    
+
     if is_upgrade:
         title = "Capacity Upgraded Successfully"
-        desc = f"Your capacity has been upgraded to {order['student_count']} students."
+        desc = f"Your capacity has been upgraded to {
+            order['student_count']} students."
         template = "CapacityUpgrade"
     else:
         title = "Payment Successful"
-        desc = f"Your subscription is now active until {new_end.strftime('%d %b %Y')}."
+        desc = f"Your subscription is now active until {
+            new_end.strftime('%d %b %Y')}."
         template = "PaymentSuccess"
-        
+
     context = {
         "institution": u["institution_or_hostel_name"],
         "plan": order["plan_type"],
@@ -1467,49 +1887,76 @@ async def verify_payment(payload: PaymentVerifyRequest, u: dict = Depends(requir
         "valid_until": new_end.strftime('%d %b %Y'),
         "invoice_number": invoice_number
     }
-    
+
     # Fire and forget (don't block the API response)
     import asyncio
-    asyncio.create_task(notify_institution(db, u["institution_or_hostel_name"], "PAYMENT", title, desc, template, context))
+    asyncio.create_task(
+        notify_institution(
+            db,
+            u["institution_or_hostel_name"],
+            "PAYMENT",
+            title,
+            desc,
+            template,
+            context))
 
     return {"success": True, "message": "Payment successful"}
 
+
 @api.get("/subscription/transactions", response_model=List[TransactionPublic])
-async def get_payment_history(skip: int = 0, limit: int = 50, u: dict = Depends(require_admin)):
+async def get_payment_history(
+        skip: int = 0,
+        limit: int = 50,
+        u: dict = Depends(require_admin)):
     items = [r async for r in transactions_col.find(
         {"institution_or_hostel_name": u["institution_or_hostel_name"]}, {"_id": 0}
     ).sort("created_at", -1).skip(skip).limit(limit)]
     return items
 
+
 @api.get("/subscription/invoices", response_model=List[InvoicePublic])
-async def get_invoices(skip: int = 0, limit: int = 50, u: dict = Depends(require_admin)):
+async def get_invoices(
+        skip: int = 0,
+        limit: int = 50,
+        u: dict = Depends(require_admin)):
     items = [r async for r in invoices_col.find(
         {"institution_or_hostel_name": u["institution_or_hostel_name"]}, {"_id": 0}
     ).sort("created_at", -1).skip(skip).limit(limit)]
     return items
 
+
 @api.get("/subscription/events", response_model=List[SubscriptionEventPublic])
-async def get_subscription_events(skip: int = 0, limit: int = 50, u: dict = Depends(require_admin)):
+async def get_subscription_events(
+        skip: int = 0,
+        limit: int = 50,
+        u: dict = Depends(require_admin)):
     items = [r async for r in subscription_events_col.find(
         {"institution_or_hostel_name": u["institution_or_hostel_name"]}, {"_id": 0}
     ).sort("event_date", -1).skip(skip).limit(limit)]
     return items
 
+
 class UpgradeOrderRequest(BaseModel):
     additional_students: int
 
+
 @api.post("/subscription/upgrade-order", response_model=OrderCreateResponse)
-async def create_upgrade_order(payload: UpgradeOrderRequest, u: dict = Depends(require_admin)):
+async def create_upgrade_order(
+        payload: UpgradeOrderRequest,
+        u: dict = Depends(require_admin)):
     sub = await subscriptions_col.find_one({"institution_or_hostel_name": u["institution_or_hostel_name"]})
     if not sub:
-        raise HTTPException(status_code=400, detail="No active subscription found")
-        
+        raise HTTPException(
+            status_code=400,
+            detail="No active subscription found")
+
     plan_type = sub.get("plan_type", "monthly")
-    
+
     # Cost for additional students based on plan
-    amount = payload.additional_students * 2.0 if plan_type == "monthly" else payload.additional_students * 1.5 * 12
+    amount = payload.additional_students * \
+        2.0 if plan_type == "monthly" else payload.additional_students * 1.5 * 12
     order_id = f"MM_UPGRADE_{uuid.uuid4().hex[:8].upper()}"
-    
+
     doc = {
         "id": str(uuid.uuid4()),
         "institution_or_hostel_name": u["institution_or_hostel_name"],
@@ -1522,7 +1969,8 @@ async def create_upgrade_order(payload: UpgradeOrderRequest, u: dict = Depends(r
         "status": "PENDING",
         "transaction_date": None,
         "plan_type": plan_type,
-        "student_count": sub["student_limit"] + payload.additional_students, # The target total limit
+        # The target total limit
+        "student_count": sub["student_limit"] + payload.additional_students,
         "is_upgrade": True,
         "additional_students": payload.additional_students,
         "action": "CAPACITY_UPGRADE",
@@ -1537,16 +1985,19 @@ class PaymentFailedRequest(BaseModel):
     error_message: str
     payment_id: Optional[str] = None
 
+
 @api.post("/subscription/payment-failed")
-async def report_payment_failed(payload: PaymentFailedRequest, u: dict = Depends(require_admin)):
+async def report_payment_failed(
+        payload: PaymentFailedRequest,
+        u: dict = Depends(require_admin)):
     order = await transactions_col.find_one({
         "order_id": payload.order_id,
         "institution_or_hostel_name": u["institution_or_hostel_name"]
     })
-    
+
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
-        
+
     await transactions_col.update_one(
         {"order_id": payload.order_id},
         {"$set": {
@@ -1556,7 +2007,7 @@ async def report_payment_failed(payload: PaymentFailedRequest, u: dict = Depends
             "transaction_date": now_iso()
         }}
     )
-    
+
     # Log to subscription events
     event_id = str(uuid.uuid4())
     await subscription_events_col.insert_one({
@@ -1570,20 +2021,30 @@ async def report_payment_failed(payload: PaymentFailedRequest, u: dict = Depends
             "amount": order["amount"]
         }
     })
-    
+
     # Send Notification
     from services.notification_service import notify_institution
     import asyncio
     title = "Payment Failed"
-    desc = f"Unfortunately your subscription payment was unsuccessful. Reason: {payload.error_message}"
+    desc = f"Unfortunately your subscription payment was unsuccessful. Reason: {
+        payload.error_message}"
     context = {
         "institution": u["institution_or_hostel_name"],
         "reason": payload.error_message,
         "order_id": payload.order_id
     }
-    asyncio.create_task(notify_institution(db, u["institution_or_hostel_name"], "PAYMENT", title, desc, "PaymentFailed", context))
-    
+    asyncio.create_task(
+        notify_institution(
+            db,
+            u["institution_or_hostel_name"],
+            "PAYMENT",
+            title,
+            desc,
+            "PaymentFailed",
+            context))
+
     return {"success": True}
+
 
 class NotificationPreferencesRequest(BaseModel):
     email_notifications: bool
@@ -1593,21 +2054,28 @@ class NotificationPreferencesRequest(BaseModel):
     payment_confirmations: bool
     invoice_emails: bool
 
+
 @api.put("/subscription/preferences")
-async def update_communication_preferences(payload: NotificationPreferencesRequest, u: dict = Depends(require_admin)):
+async def update_communication_preferences(
+        payload: NotificationPreferencesRequest,
+        u: dict = Depends(require_admin)):
     await subscriptions_col.update_one(
         {"institution_or_hostel_name": u["institution_or_hostel_name"]},
         {"$set": {"communication_preferences": payload.model_dump()}}
     )
     return {"success": True}
 
+
 @api.put("/subscription/billing-contact")
-async def update_billing_contact(payload: BillingContact, u: dict = Depends(require_admin)):
+async def update_billing_contact(
+        payload: BillingContact,
+        u: dict = Depends(require_admin)):
     await subscriptions_col.update_one(
         {"institution_or_hostel_name": u["institution_or_hostel_name"]},
         {"$set": {"billing_contact": payload.model_dump()}}
     )
     return {"success": True}
+
 
 @api.get("/notifications", response_model=List[NotificationPublic])
 async def get_notifications(u: dict = Depends(require_admin)):
@@ -1616,20 +2084,27 @@ async def get_notifications(u: dict = Depends(require_admin)):
     ).sort("created_at", -1)]
     return items
 
+
 @api.put("/notifications/{notification_id}/read")
-async def mark_notification_read(notification_id: str, u: dict = Depends(require_admin)):
+async def mark_notification_read(
+        notification_id: str,
+        u: dict = Depends(require_admin)):
     await notifications_col.update_one(
         {"id": notification_id, "institution_or_hostel_name": u["institution_or_hostel_name"]},
         {"$set": {"read_status": True}}
     )
     return {"success": True}
 
+
 @api.post("/cron/backup-db")
 async def backup_database():
     """Mock endpoint for triggering database backup."""
     import asyncio
-    await asyncio.sleep(1) # simulate backup process
-    return {"success": True, "message": "Database backup completed successfully."}
+    await asyncio.sleep(1)  # simulate backup process
+    return {
+        "success": True,
+        "message": "Database backup completed successfully."}
+
 
 @api.post("/cron/subscription-reminders")
 async def process_subscription_reminders():
@@ -1639,41 +2114,46 @@ async def process_subscription_reminders():
     """
     from services.notification_service import notify_institution
     from datetime import datetime, timezone
-    
-    now_dt = datetime.now(timezone.utc)
-    
+
+    now_dt = datetime.now(IST)
+
     async for sub in subscriptions_col.find({}):
         institution = sub["institution_or_hostel_name"]
-        
+
         # Trial processing
         if sub.get("is_trial") and sub.get("trial_end_date"):
             end_dt = datetime.fromisoformat(sub["trial_end_date"])
             days_remaining = (end_dt - now_dt).days
-            
+
             if days_remaining in [5, 3, 1, 0]:
                 title = f"Your MessMate Trial Ends in {days_remaining} Days" if days_remaining > 0 else "Your free trial expires today"
                 desc = "Purchase a subscription now to continue using MessMate without interruption."
                 await notify_institution(db, institution, "TRIAL", title, desc, "TrialReminder", {"days": days_remaining, "institution": institution})
-                
+
         # Expiry processing
         elif not sub.get("is_trial") and sub.get("subscription_end_date"):
             end_dt = datetime.fromisoformat(sub["subscription_end_date"])
             days_remaining = (end_dt - now_dt).days
             plan_type = sub.get("plan_type", "monthly")
-            
+
             # Monthly vs Yearly schedule
-            schedule = [7, 3, 1, 0] if plan_type == "monthly" else [30, 15, 7, 3, 1, 0]
-            
+            schedule = [
+                7, 3, 1, 0] if plan_type == "monthly" else [
+                30, 15, 7, 3, 1, 0]
+
             if days_remaining in schedule:
                 title = "Your MessMate Subscription Expires Soon"
-                desc = f"Your {plan_type.capitalize()} Subscription expires in {days_remaining} days. Renew now to avoid interruption."
+                desc = f"Your {
+                    plan_type.capitalize()} Subscription expires in {days_remaining} days. Renew now to avoid interruption."
                 await notify_institution(db, institution, "SUBSCRIPTION", title, desc, "SubscriptionExpiring", {"days": days_remaining, "institution": institution, "plan": plan_type})
-                
+
     return {"success": True, "message": "Cron job completed"}
+
 
 class WebhookPayload(BaseModel):
     event: str
     payload: dict
+
 
 @api.post("/subscription/webhook")
 async def payment_webhook(payload: dict, request: Request):
@@ -1682,40 +2162,48 @@ async def payment_webhook(payload: dict, request: Request):
     """
     event = payload.get("event")
     data = payload.get("payload", {})
-    
+
     if event == "payment.captured":
         order_id = data.get("order_id")
         payment_id = data.get("payment_id")
-        
+
         if order_id:
             order = await transactions_col.find_one({"order_id": order_id})
             if order and order["status"] == "PENDING":
-                # Mark as success (actual implementation would call verify_payment logic internally)
+                # Mark as success (actual implementation would call
+                # verify_payment logic internally)
                 await transactions_col.update_one(
                     {"order_id": order_id},
                     {"$set": {"status": "SUCCESS", "payment_id": payment_id, "transaction_date": now_iso()}}
                 )
     return {"status": "ok"}
 
+
 class AutoRenewRequest(BaseModel):
     enabled: bool
 
+
 @api.put("/subscription/auto-renew")
-async def toggle_auto_renew(payload: AutoRenewRequest, u: dict = Depends(require_admin)):
+async def toggle_auto_renew(
+        payload: AutoRenewRequest,
+        u: dict = Depends(require_admin)):
     await subscriptions_col.update_one(
         {"institution_or_hostel_name": u["institution_or_hostel_name"]},
         {"$set": {"auto_renew": payload.enabled}}
     )
     return {"success": True, "auto_renew": payload.enabled}
 
+
 @api.post("/auth/push-token")
-async def save_push_token(payload: PushTokenInput, u: dict = Depends(get_current_user)):
+async def save_push_token(
+        payload: PushTokenInput,
+        u: dict = Depends(get_current_user)):
     """Capture an Expo/FCM push token. Also registers with the Emergent relay."""
     await users_col.update_one(
         {"id": u["id"]},
         {"$set": {"push_token": payload.push_token.strip(),
-                   "push_platform": payload.platform,
-                   "updated_at": now_iso()}},
+                  "push_platform": payload.platform,
+                  "updated_at": now_iso()}},
     )
     # Upsert into push_tokens collection (one doc per user/device combo)
     await push_tokens_col.update_one(
@@ -1731,7 +2219,9 @@ async def save_push_token(payload: PushTokenInput, u: dict = Depends(get_current
 
 
 @api.post("/register-push", status_code=201)
-async def register_push(body: RegisterPushBody, u: dict = Depends(get_current_user)):
+async def register_push(
+        body: RegisterPushBody,
+        u: dict = Depends(get_current_user)):
     """Relay device token registration to the Emergent push provider.
 
     The auth dep ensures we're tying it to the right user.
@@ -1761,16 +2251,69 @@ async def register_push(body: RegisterPushBody, u: dict = Depends(get_current_us
         elif resp.status_code >= 500:
             logger.warning("Push provider 5xx: %s", resp.text[:200])
     except Exception as e:
-        logger.warning("Push register relay failed (non-blocking): %s", e)
+        logger.warning("Push register relay failed (non-blocking): %s", e, exc_info=True)
     return {"status": "registered"}
 
 
 # ---------------------------------------------------------------------------
 # Student routes
 # ---------------------------------------------------------------------------
+
+@api.get("/student/subscription/status")
+async def student_subscription_status(u: dict = Depends(get_current_user)):
+    """
+    Returns the subscription status for the institution/hostel the student belongs to.
+    
+    Access rules enforced here:
+    - Student must be logged in (valid JWT).
+    - Student must have approval_status == "approved".
+    - Student must NOT be blocked.
+    - The linked admin must have an active Free Trial or active Subscription.
+    
+    This endpoint is intentionally separate from /api/subscription/status which
+    requires admin role. Students use this endpoint so the frontend SubscriptionGuard
+    correctly inherits the admin's subscription status.
+    """
+    if u["role"] != "student":
+        raise HTTPException(status_code=403, detail="Student access required")
+    
+    approval = u.get("approval_status", "pending")
+    
+    if approval == "blocked":
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "student_blocked",
+                "message": "Your access has been blocked by the hostel administrator."
+            }
+        )
+    
+    if approval != "approved":
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "student_pending",
+                "message": "Your account is pending admin approval. Please wait."
+            }
+        )
+    
+    institution = u.get("institution_or_hostel_name", "")
+    if not institution:
+        raise HTTPException(status_code=400, detail="Institution not found on student account")
+    
+    # Look up the admin's subscription for this institution
+    sub = await get_subscription_status(institution)
+    
+    # Do NOT block here — return the status so the frontend can decide.
+    # The frontend SubscriptionGuard will show the appropriate lock screen
+    # if the admin's subscription is expired.
+    return sub
+
+
 @api.get("/student/meta")
 async def student_meta(_: dict = Depends(require_approved_student)):
     return {"reasons": REASONS, "days": DAYS}
+
 
 
 @api.get("/student/today")
@@ -1779,7 +2322,10 @@ async def student_today(
     for_: Literal["today", "tomorrow"] = Query("today", alias="for"),
 ):
     base = date.fromisoformat(today_iso())
-    target_date = (base + timedelta(days=1)).isoformat() if for_ == "tomorrow" else base.isoformat()
+    target_date = (
+        base +
+        timedelta(
+            days=1)).isoformat() if for_ == "tomorrow" else base.isoformat()
     day = day_of_week(date.fromisoformat(target_date))
     h = hostel_of(u)
     menu_doc = await menus_col.find_one({"hostel": h, "day": day}, {"_id": 0})
@@ -1846,21 +2392,26 @@ async def student_menu_week(u: dict = Depends(require_approved_student)):
     docs = []
     for d in DAYS:
         m = await menus_col.find_one({"hostel": h, "day": d}, {"_id": 0})
-        docs.append(project_menu(m) if m else {
-            "day": d, "breakfast_items": [], "lunch_items": [], "dinner_items": [],
-            "breakfast_custom_question": None, "lunch_custom_question": None,
-            "dinner_custom_question": None,
-        })
+        docs.append(
+            project_menu(m) if m else {
+                "day": d,
+                "breakfast_items": [],
+                "lunch_items": [],
+                "dinner_items": [],
+                "breakfast_custom_question": None,
+                "lunch_custom_question": None,
+                "dinner_custom_question": None,
+            })
     reactions: Dict[str, str] = {}
     async for r in menu_reactions_col.find(
         {"student_id": u["id"]}, {"_id": 0, "day": 1, "meal_type": 1, "reaction": 1}
     ):
         reactions[f"{r['day']}:{r['meal_type']}"] = r["reaction"]
-    for d in docs:
-        d["reactions"] = {
-            "breakfast": reactions.get(f"{d['day']}:breakfast", "no_response"),
-            "lunch": reactions.get(f"{d['day']}:lunch", "no_response"),
-            "dinner": reactions.get(f"{d['day']}:dinner", "no_response"),
+    for d_doc in docs:
+        d_doc["reactions"] = {
+            "breakfast": reactions.get(f"{d_doc['day']}:breakfast", "no_response"),
+            "lunch": reactions.get(f"{d_doc['day']}:lunch", "no_response"),
+            "dinner": reactions.get(f"{d_doc['day']}:dinner", "no_response"),
         }
     return {"days": docs}
 
@@ -1868,7 +2419,8 @@ async def student_menu_week(u: dict = Depends(require_approved_student)):
 @api.get("/student/menu/month")
 async def student_menu_month(u: dict = Depends(require_approved_student)):
     week = await student_menu_week(u)  # type: ignore[arg-type]
-    return {"weeks": [{"label": f"Week {i + 1}", "days": week["days"]} for i in range(4)]}
+    return {"weeks": [{"label": f"Week {i + 1}",
+                       "days": week["days"]} for i in range(4)]}
 
 
 @api.put("/student/menu/reaction")
@@ -1908,8 +2460,18 @@ async def student_wastage(
     ).sort("date", 1)]
     series = []
     for r in rows:
-        v = (r.get("breakfast_wastage_kg", 0) + r.get("lunch_wastage_kg", 0) +
-             r.get("dinner_wastage_kg", 0)) if meal == "all" else r.get(f"{meal}_wastage_kg", 0)
+        v = (
+            r.get(
+                "breakfast_wastage_kg",
+                0) +
+            r.get(
+                "lunch_wastage_kg",
+                0) +
+            r.get(
+                "dinner_wastage_kg",
+                0)) if meal == "all" else r.get(
+                    f"{meal}_wastage_kg",
+            0)
         series.append({"date": r["date"], "value": round(v, 2)})
 
     def row(d: date) -> Optional[dict]:
@@ -1930,11 +2492,22 @@ async def student_wastage(
     def total(r: Optional[dict]) -> Optional[float]:
         if not r:
             return None
-        return round(r.get("breakfast_wastage_kg", 0) + r.get("lunch_wastage_kg", 0)
-                     + r.get("dinner_wastage_kg", 0), 2)
+        return round(
+            r.get(
+                "breakfast_wastage_kg",
+                0) +
+            r.get(
+                "lunch_wastage_kg",
+                0) +
+            r.get(
+                "dinner_wastage_kg",
+                0),
+            2)
 
     return {
-        "range": range, "meal": meal, "series": series,
+        "range": range,
+        "meal": meal,
+        "series": series,
         "summary": {
             "today": {
                 "breakfast": today_row.get("breakfast_wastage_kg") if today_row else None,
@@ -1969,7 +2542,8 @@ def _project_notif(doc: dict, viewer_id: Optional[str] = None) -> dict:
 
 
 @api.get("/admin/notifications/default-template")
-async def admin_notification_default_template(_: dict = Depends(require_admin)):
+async def admin_notification_default_template(
+        _: dict = Depends(require_admin)):
     """Returns the suggested default text for the food-waste reminder."""
     return {
         "title": DEFAULT_REMINDER_TITLE,
@@ -1977,30 +2551,91 @@ async def admin_notification_default_template(_: dict = Depends(require_admin)):
     }
 
 
-@api.get("/student/notifications")
-async def student_notifications(u: dict = Depends(require_approved_student)):
+@api.get("/admin/notifications")
+async def admin_notifications(u: dict = Depends(require_active_subscription_admin)):
     h = hostel_of(u)
     items = []
-    cursor = notifications_col.find(
-        {
-            "hostel": h,
-            "sent": {"$ne": False},  # only surface notifications that have been dispatched
-            "$or": [{"audience": "all"}, {"audience": "student", "recipient_id": u["id"]}],
-            "deleted_by": {"$ne": u["id"]}
-        },
-        {"_id": 0},
+    
+    async for d in notification_logs_col.find({"hostel": h}, {"_id": 0}):
+        d["category"] = "PUSH"
+        d["description"] = d.get("message", "Sent to students")
+        d["created_at"] = d.get("delivered_at")
+        d["read_status"] = True
+        d["status"] = "Sent Successfully" if d.get("delivered_count", 0) > 0 else "Failed"
+        
+        # Parse delivered_at ISO to Indian Date & Time for UI
+        if d.get("delivered_at"):
+            try:
+                dt = datetime.fromisoformat(d["delivered_at"])
+                d["date"] = dt.strftime("%d-%m-%Y")
+                d["time"] = dt.strftime("%I:%M %p")
+            except:
+                pass
+        
+        items.append(d)
+
+    async for s in scheduled_notifications_col.find({"hostel": h, "isActive": True}, {"_id": 0}):
+        s["category"] = "PUSH"
+        s["description"] = s.get("message", "")
+        s["read_status"] = True
+        s["status"] = "Scheduled"
+        
+        # Parse created_at ISO to Indian Date & Time for UI fallback if scheduled time is dynamic
+        if s.get("created_at"):
+            try:
+                dt = datetime.fromisoformat(s["created_at"])
+                s["date"] = dt.strftime("%d-%m-%Y")
+                s["time"] = dt.strftime("%I:%M %p")
+            except:
+                pass
+                
+        items.append(s)
+
+    items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+    return {"items": items[:100]}
+
+@api.post("/admin/notifications/{notif_id}/read")
+async def mark_admin_notif_read(notif_id: str, u: dict = Depends(require_active_subscription_admin)):
+    res = await admin_notifications_col.update_one(
+        {"id": notif_id, "institution_or_hostel_name": hostel_of(u)},
+        {"$set": {"read_status": True}}
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    return {"ok": True}
+
+@api.delete("/admin/notifications/{notif_id}")
+async def delete_admin_notif(notif_id: str, u: dict = Depends(require_active_subscription_admin)):
+    res = await notification_logs_col.delete_one(
+        {"id": notif_id, "hostel": hostel_of(u)}
+    )
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    return {"ok": True}
+
+@api.post("/admin/notifications/clear")
+async def clear_admin_notifs(u: dict = Depends(require_active_subscription_admin)):
+    await notification_logs_col.delete_many({"hostel": hostel_of(u)})
+    return {"ok": True}
+
+
+# --- STUDENT NOTIFICATIONS ---
+@api.get("/student/notifications")
+async def student_notifications(u: dict = Depends(require_approved_student)):
+    items = []
+    cursor = student_notifications_col.find(
+        {"recipient_id": u["id"]}, {"_id": 0}
     ).sort("created_at", -1).limit(50)
     async for d in cursor:
-        items.append(_project_notif(d, viewer_id=u["id"]))
-    unread = sum(1 for i in items if not i.get("read"))
+        items.append(d)
+    unread = sum(1 for i in items if not i.get("read_status"))
     return {"items": items, "unread_count": unread}
 
-
 @api.post("/student/notifications/{notif_id}/read")
-async def mark_notif_read(notif_id: str, u: dict = Depends(require_approved_student)):
-    res = await notifications_col.update_one(
-        {"id": notif_id, "hostel": hostel_of(u)},
-        {"$addToSet": {"read_by": u["id"]}},
+async def mark_student_notif_read(notif_id: str, u: dict = Depends(require_approved_student)):
+    res = await student_notifications_col.update_one(
+        {"id": notif_id, "recipient_id": u["id"]},
+        {"$set": {"read_status": True}}
     )
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Notification not found")
@@ -2008,342 +2643,206 @@ async def mark_notif_read(notif_id: str, u: dict = Depends(require_approved_stud
 
 @api.delete("/student/notifications/{notif_id}")
 async def delete_student_notif(notif_id: str, u: dict = Depends(require_approved_student)):
-    res = await notifications_col.update_one(
-        {"id": notif_id, "hostel": hostel_of(u)},
-        {"$addToSet": {"deleted_by": u["id"]}},
+    res = await student_notifications_col.delete_one(
+        {"id": notif_id, "recipient_id": u["id"]}
     )
-    if res.matched_count == 0:
+    if res.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Notification not found")
     return {"ok": True}
 
+@api.post("/student/notifications/clear")
+async def clear_student_notifs(u: dict = Depends(require_approved_student)):
+    await student_notifications_col.delete_many({"recipient_id": u["id"]})
+    return {"ok": True}
 
-@api.get("/admin/notifications")
-async def admin_notifications(u: dict = Depends(require_active_subscription_admin)):
-    items = []
-    cursor = notifications_col.find(
-        {"hostel": hostel_of(u)}, {"_id": 0}
-    ).sort("created_at", -1).limit(100)
-    async for d in cursor:
-        items.append(_project_notif(d))
-    return {"items": items}
+@api.get("/student/notification-settings")
+async def get_notification_settings(u: dict = Depends(require_approved_student)):
+    settings = u.get("notification_settings", {
+        "push_notifications": True,
+        "in_app_notifications": True,
+        "sound": True,
+        "vibration": True
+    })
+    return settings
+
+@api.post("/student/notification-settings")
+async def update_notification_settings(payload: NotificationSettingsPayload, u: dict = Depends(require_approved_student)):
+    now = datetime.now(IST).isoformat()
+    await users_col.update_one(
+        {"id": u["id"]},
+        {"$set": {"notification_settings": payload.dict(), "updated_at": now}}
+    )
+    return {"ok": True}
 
 
-@api.post("/admin/notifications", status_code=201)
-async def admin_create_notification(
-    payload: NotificationCreate, u: dict = Depends(require_active_subscription_admin)
-):
+# --- PUSH CENTRE (ADMIN -> STUDENT) ---
+
+class PushImmediateRequest(BaseModel):
+    title: str
+    message: str
+
+@api.post("/admin/notifications/push/immediate")
+async def admin_push_immediate(payload: PushImmediateRequest, u: dict = Depends(require_active_subscription_admin)):
     now = now_iso()
+    h = hostel_of(u)
+    
+    recipients = []
+    async for user in users_col.find({
+        "role": "student",
+        "approval_status": "approved",
+        "$or": [{"admin_id": u["id"]}, {"institution_or_hostel_name": h}]
+    }):
+        recipients.append(user["id"])
+    
+    docs = []
     now_dt = datetime.now(IST)
-    # Parse `send_at` (ISO datetime). If missing or in the past → fire now.
-    send_at_dt: Optional[datetime] = None
-    if payload.send_at:
-        try:
-            raw = payload.send_at.strip()
-            if raw.endswith("Z"):
-                raw = raw[:-1] + "+00:00"
-            send_at_dt = datetime.fromisoformat(raw)
-            if send_at_dt.tzinfo is None:
-                send_at_dt = send_at_dt.replace(tzinfo=IST)
-        except Exception:
-            raise HTTPException(status_code=400, detail="Invalid send_at (use ISO 8601 datetime)")
-    is_scheduled_future = send_at_dt is not None and send_at_dt > now_dt
-
-    doc = {
+    indian_months = ["January","February","March","April","May","June",
+                     "July","August","September","October","November","December"]
+    indian_date = f"{now_dt.day:02d} {indian_months[now_dt.month-1]} {now_dt.year}"
+    indian_day = now_dt.strftime("%A")
+    indian_time = now_dt.strftime("%I:%M %p")
+    for r_id in recipients:
+        docs.append({
+            "id": str(uuid.uuid4()),
+            "recipient_id": r_id,
+            "title": payload.title.strip(),
+            "message": payload.message.strip(),
+            "date": indian_date,
+            "day": indian_day,
+            "time": indian_time,
+            "created_at": now,
+            "read_status": False,
+            "sender_id": u["id"]
+        })
+    
+    if docs:
+        await student_notifications_col.insert_many(docs)
+        
+    await notification_logs_col.insert_one({
         "id": str(uuid.uuid4()),
-        "hostel": hostel_of(u),
-        "title": payload.title.strip(),
-        "body": payload.body.strip(),
-        "audience": payload.audience,
-        "recipient_id": payload.recipient_id,
-        "type": payload.type,
-        "action_url": payload.action_url,
-        "scheduled_for": payload.scheduled_for or (
-            send_at_dt.date().isoformat() if send_at_dt else today_iso()
-        ),
-        "send_at": send_at_dt.isoformat() if send_at_dt else None,
-        "sent": not is_scheduled_future,
-        "sent_at": None if is_scheduled_future else now,
-        "created_by": u["id"],
-        "read_by": [],
-        "created_at": now,
-    }
-    await notifications_col.insert_one(doc)
-    doc.pop("_id", None)
-
-    if not is_scheduled_future:
-        # Fire push immediately.
-        recipients = await _recipients_for(u, payload.audience, payload.recipient_id)
-        try:
-            await send_push(
-                recipients,
-                {"title": payload.title.strip(), "message": payload.body.strip(),
-                 "subtext": "MessMate", "action_url": payload.action_url or "/notifications"},
-                idempotency_key=doc["id"],
-            )
-        except Exception as e:
-            logger.warning("push send failed (non-blocking): %s", e)
-    return _project_notif(doc)
-
-
-class NotificationUpdate(BaseModel):
-    """Editable fields for a scheduled (not-yet-sent) notification."""
-    title: Optional[str] = Field(default=None, min_length=1, max_length=140)
-    body: Optional[str] = Field(default=None, min_length=1, max_length=600)
-    send_at: Optional[str] = None  # ISO datetime — new fire time (must be in the future)
-
-
-@api.patch("/admin/notifications/{nid}")
-async def admin_update_notification(
-    nid: str,
-    payload: NotificationUpdate,
-    u: dict = Depends(require_active_subscription_admin),
-):
-    """Edit a scheduled (unsent) notification. Sent notifications cannot be edited."""
-    doc = await notifications_col.find_one(
-        {"id": nid, "hostel": hostel_of(u)}, {"_id": 0}
-    )
-    if not doc:
-        raise HTTPException(status_code=404, detail="Notification not found")
-    if doc.get("sent") is True:
-        raise HTTPException(
-            status_code=400,
-            detail="This notification has already been sent and can't be edited.",
-        )
-    updates: dict = {}
-    if payload.title is not None:
-        updates["title"] = payload.title.strip()
-    if payload.body is not None:
-        updates["body"] = payload.body.strip()
-    if payload.send_at is not None:
-        try:
-            raw = payload.send_at.strip()
-            if raw.endswith("Z"):
-                raw = raw[:-1] + "+00:00"
-            new_dt = datetime.fromisoformat(raw)
-            if new_dt.tzinfo is None:
-                new_dt = new_dt.replace(tzinfo=IST)
-        except Exception:
-            raise HTTPException(status_code=400, detail="Invalid send_at (use ISO 8601 datetime)")
-        if new_dt <= datetime.now(IST):
-            raise HTTPException(
-                status_code=400,
-                detail="send_at must be in the future for a scheduled notification.",
-            )
-        updates["send_at"] = new_dt.isoformat()
-        updates["scheduled_for"] = new_dt.date().isoformat()
-    if not updates:
-        raise HTTPException(status_code=400, detail="No changes provided")
-    updates["updated_at"] = now_iso()
-    await notifications_col.update_one({"id": nid}, {"$set": updates})
-    doc.update(updates)
-    return _project_notif(doc)
-
-
-@api.delete("/admin/notifications/{nid}", status_code=204)
-async def admin_delete_notification(nid: str, u: dict = Depends(require_active_subscription_admin)):
-    """Cancel a scheduled (unsent) notification. Sent ones are also removable
-    from the admin history."""
-    doc = await notifications_col.find_one(
-        {"id": nid, "hostel": hostel_of(u)}, {"_id": 0, "id": 1, "sent": 1}
-    )
-    if not doc:
-        raise HTTPException(status_code=404, detail="Notification not found")
-    await notifications_col.delete_one({"id": nid, "hostel": hostel_of(u)})
-    return None
-
-# --- Recurring Notifications ---
-
-@api.post("/admin/scheduled-notifications", status_code=201)
-async def admin_create_recurring_notification(
-    payload: RecurringNotificationCreate, u: dict = Depends(require_active_subscription_admin)
-):
-    now = now_iso()
-    doc = {
-        "id": str(uuid.uuid4()),
-        "hostel": hostel_of(u),
-        "adminId": u["id"],
+        "admin_id": u["id"],
+        "hostel": h,
         "title": payload.title.strip(),
         "message": payload.message.strip(),
-        "notificationType": payload.notificationType,
-        "scheduledTime": payload.scheduledTime,
-        "startDate": payload.startDate,
-        "endDate": payload.endDate,
-        "isActive": True,
-        "lastSentAt": None,
-        "createdAt": now,
-        "updatedAt": now,
-        "stats": {
-            "totalRecipients": 0,
-            "delivered": 0,
-            "failed": 0
-        }
-    }
+        "type": "Immediate",
+        "delivered_count": len(recipients),
+        "delivered_at": now
+    })
+    
+    try:
+        await send_push(recipients, {
+            "title": payload.title.strip(), 
+            "message": payload.message.strip(),
+            "subtext": "MessMate",
+            "action_url": "/notifications"
+        })
+    except Exception:
+        pass
+        
+    return {"ok": True, "delivered_count": len(recipients)}
+
+@api.post("/admin/notifications/push/schedule")
+async def admin_push_schedule(payload: ScheduledNotificationPublic, u: dict = Depends(require_active_subscription_admin)):
+    doc = payload.model_dump()
+    if not doc.get("id"):
+        doc["id"] = str(uuid.uuid4())
+    doc["hostel"] = hostel_of(u)
+    doc["adminId"] = u["id"]
+    if not doc.get("created_at"):
+        doc["created_at"] = now_iso()
+    doc["lastSentAt"] = None
+    
     await scheduled_notifications_col.insert_one(doc)
     doc.pop("_id", None)
     return doc
 
-@api.get("/admin/scheduled-notifications")
-async def admin_list_recurring_notifications(u: dict = Depends(require_active_subscription_admin)):
+@api.get("/admin/notifications/push/schedule")
+async def admin_push_schedule_list(u: dict = Depends(require_active_subscription_admin)):
     items = []
     cursor = scheduled_notifications_col.find(
         {"hostel": hostel_of(u)}, {"_id": 0}
-    ).sort("createdAt", -1)
+    ).sort("created_at", -1)
     async for d in cursor:
         items.append(d)
     return {"items": items}
 
-@api.put("/admin/scheduled-notifications/{nid}")
-async def admin_update_recurring_notification(
-    nid: str, payload: RecurringNotificationUpdate, u: dict = Depends(require_active_subscription_admin)
-):
+@api.put("/admin/notifications/push/schedule/{nid}")
+async def admin_push_schedule_update(nid: str, payload: ScheduledNotificationPublic, u: dict = Depends(require_active_subscription_admin)):
     updates = payload.model_dump(exclude_unset=True)
-    if not updates:
-        raise HTTPException(status_code=400, detail="No updates provided")
-    updates["updatedAt"] = now_iso()
+    if "id" in updates:
+        del updates["id"]
+        
     res = await scheduled_notifications_col.update_one(
         {"id": nid, "hostel": hostel_of(u)},
         {"$set": updates}
     )
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Not found")
+    
     doc = await scheduled_notifications_col.find_one({"id": nid}, {"_id": 0})
     return doc
 
-@api.delete("/admin/scheduled-notifications/{nid}", status_code=204)
-async def admin_delete_recurring_notification(nid: str, u: dict = Depends(require_active_subscription_admin)):
+@api.delete("/admin/notifications/push/schedule/{nid}")
+async def admin_push_schedule_delete(nid: str, u: dict = Depends(require_active_subscription_admin)):
     res = await scheduled_notifications_col.delete_one({"id": nid, "hostel": hostel_of(u)})
     if res.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Not found")
-    return None
+    return {"ok": True}
 
-
-
-async def _recipients_for(
-    admin: dict,
-    audience: str,
-    recipient_id: Optional[str] = None,
-) -> List[str]:
-    h = hostel_of(admin)
-    if audience == "student":
-        if recipient_id:
-            return [recipient_id]
-        return [u["id"] async for u in users_col.find(
-            {"role": "student", "approval_status": "approved",
-             "institution_or_hostel_name": h}, {"_id": 0, "id": 1})]
-    if audience == "admin":
-        return [u["id"] async for u in users_col.find(
-            {"role": "admin", "institution_or_hostel_name": h}, {"_id": 0, "id": 1})]
-    # "all" — students + admins of this hostel
-    return [u["id"] async for u in users_col.find(
-        {"institution_or_hostel_name": h,
-         "$or": [{"role": "admin"}, {"approval_status": "approved"}]},
-        {"_id": 0, "id": 1})]
-
-
-@api.post("/admin/notifications/dispatch-reminder", status_code=201)
-async def admin_dispatch_reminder(
-    payload: ReminderDispatchInput, u: dict = Depends(require_active_subscription_admin)
-):
-    """Push a role-specific reminder right now. Defaults to students."""
-    audience = payload.audience or "student"
-    if audience == "student":
-        title = payload.title or "Submit your meal preferences"
-        body = payload.body or (
-            "Help us cook the right quantity — mark today's meals in MessMate."
-        )
-    elif audience == "admin":
-        title = payload.title or "Review today's plan"
-        body = payload.body or (
-            "Check the dashboard to confirm cooking quantities before service."
-        )
-    else:
-        title = payload.title or "MessMate update"
-        body = payload.body or "Open MessMate for the latest update."
-    now = now_iso()
-    doc = {
-        "id": str(uuid.uuid4()), "hostel": hostel_of(u),
-        "title": title, "body": body,
-        "audience": "all" if audience == "all" else "student" if audience == "student" else "all",
-        "recipient_id": None,
-        "type": "menu_reminder" if audience == "student" else "system",
-        "scheduled_for": today_iso(),
-        "created_by": u["id"], "read_by": [], "created_at": now,
-    }
-    await notifications_col.insert_one(doc)
-    doc.pop("_id", None)
-    recipients = await _recipients_for(u, audience)
-    try:
-        await send_push(recipients, {
-            "title": title, "message": body,
-            "subtext": "MessMate", "action_url": "/notifications",
-        }, idempotency_key=doc["id"])
-    except Exception as e:
-        logger.warning("reminder push failed: %s", e)
-    return {"ok": True, "audience": audience, "recipients": len(recipients),
-             "notification": _project_notif(doc)}
-
-
-@api.post("/admin/notifications/menu-reminder", status_code=201)
-async def admin_menu_reminder(
-    payload: MenuReminderCreate, u: dict = Depends(require_active_subscription_admin)
-):
-    """Sends a 'tomorrow's menu' reminder to all students of the hostel."""
+@api.post("/admin/notifications/push/test")
+async def admin_push_test(payload: PushImmediateRequest, u: dict = Depends(require_active_subscription_admin)):
     h = hostel_of(u)
-    tomorrow = (date.fromisoformat(today_iso()) + timedelta(days=1)).isoformat()
-    tomorrow_day = day_of_week(date.fromisoformat(tomorrow))
-    menu = await menus_col.find_one({"hostel": h, "day": tomorrow_day}, {"_id": 0})
-    if not menu:
-        raise HTTPException(
-            status_code=400,
-            detail=f"No menu set for {tomorrow_day}. Add it in Necessary Info first.",
-        )
-    body = payload.custom_body or (
-        f"Tomorrow ({tomorrow_day.capitalize()})\n"
-        f"Breakfast: {', '.join(menu.get('breakfast_items', [])) or '—'}\n"
-        f"Lunch: {', '.join(menu.get('lunch_items', [])) or '—'}\n"
-        f"Dinner: {', '.join(menu.get('dinner_items', [])) or '—'}\n"
-        "Mark your meals to help us plan the right quantity."
-    )
-    doc = {
-        "id": str(uuid.uuid4()),
-        "hostel": h,
-        "title": "Tomorrow's menu",
-        "body": body,
-        "audience": "all",
-        "recipient_id": None,
-        "type": "menu_reminder",
-        "scheduled_for": tomorrow,
-        "created_by": u["id"],
-        "read_by": [],
-        "created_at": now_iso(),
-    }
-    await notifications_col.insert_one(doc)
-    doc.pop("_id", None)
-    recipients = await _recipients_for(u, "student")
-    try:
-        await send_push(recipients, {
-            "title": doc["title"], "message": body,
-            "subtext": "MessMate", "action_url": "/notifications",
-        }, idempotency_key=doc["id"])
-    except Exception as e:
-        logger.warning("menu-reminder push failed: %s", e)
-    return _project_notif(doc)
+    recipients = []
+    async for user in users_col.find({"role": "student", "approval_status": "approved", "institution_or_hostel_name": h}):
+        recipients.append(user["id"])
+        
+    docs = []
+    now_dt = datetime.now(IST)
+    indian_months = ["January","February","March","April","May","June",
+                     "July","August","September","October","November","December"]
+    indian_date = f"{now_dt.day:02d} {indian_months[now_dt.month-1]} {now_dt.year}"
+    indian_day = now_dt.strftime("%A")
+    indian_time = now_dt.strftime("%I:%M %p")
+    for r_id in recipients:
+        docs.append({
+            "id": str(uuid.uuid4()),
+            "recipient_id": r_id,
+            "title": "[TEST] " + payload.title.strip(),
+            "message": payload.message.strip(),
+            "date": indian_date,
+            "day": indian_day,
+            "time": indian_time,
+            "created_at": now_iso(),
+            "read_status": False,
+            "sender_id": u["id"]
+        })
+    
+    if docs:
+        await student_notifications_col.insert_many(docs)
+    
+    return {"ok": True, "delivered_count": len(recipients)}
+
+
 
 
 # ---------------------------------------------------------------------------
 # ADMIN: Students
 # ---------------------------------------------------------------------------
 @api.get("/admin/students/summary")
-async def admin_students_summary(u: dict = Depends(require_active_subscription_admin)):
+async def admin_students_summary(
+        u: dict = Depends(require_active_subscription_admin)):
     h = hostel_of(u)
     base = {"role": "student", "institution_or_hostel_name": h}
-    
+
     total_approved = await users_col.count_documents({**base, "approval_status": "approved"})
-    total_blocked = await users_col.count_documents({**base, "approval_status": "rejected_or_blocked"})
-    
-    pending_base = {"role": "student", "institution_or_hostel_name": h, "email_verified": True}
+    total_blocked = await users_col.count_documents({**base, "approval_status": "blocked"})
+
+    pending_base = {
+        "role": "student",
+        "institution_or_hostel_name": h,
+        "email_verified": True}
     total_pending = await pending_requests_col.count_documents(pending_base)
-    
+
     return {
         "total_students": total_approved + total_blocked + total_pending,
         "approved": total_approved,
@@ -2359,88 +2858,176 @@ async def admin_students_list(
 ):
     h = hostel_of(u)
     items = []
-    
+
     if status in ("all", "approved", "blocked"):
         q: dict = {"role": "student", "institution_or_hostel_name": h}
         if status == "approved":
             q["approval_status"] = "approved"
         elif status == "blocked":
-            q["approval_status"] = "rejected_or_blocked"
-            
+            q["approval_status"] = "blocked"
+
         items.extend([s async for s in users_col.find(
             q, {"_id": 0, "password_hash": 0, "push_token": 0}
         )])
-        
+
     if status in ("all", "pending"):
-        pq: dict = {"role": "student", "institution_or_hostel_name": h, "email_verified": True}
+        pq: dict = {
+            "role": "student",
+            "institution_or_hostel_name": h,
+            "email_verified": True}
         pending_items = [s async for s in pending_requests_col.find(
             pq, {"_id": 0, "password_hash": 0, "push_token": 0}
         )]
         for p in pending_items:
             p["approval_status"] = "pending"
         items.extend(pending_items)
-        
+
     items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
     return {"students": items, "count": len(items)}
 
 
 @api.post("/admin/students/{sid}/approve")
-async def admin_approve(sid: str, u: dict = Depends(require_active_subscription_admin)):
+async def admin_approve(sid: str, u: dict = Depends(
+        require_active_subscription_admin)):
     h = hostel_of(u)
-    
+
     # Check capacity
     sub_status = await get_subscription_status(h)
     limit = sub_status["student_limit"]
     current = sub_status["registered_students"]
-    
+    is_trial = sub_status.get("is_trial", False) and sub_status.get(
+        "status") == "TRIAL_ACTIVE"
+
     status_to_set = "approved"
-    if current >= limit:
+    if not is_trial and current >= limit:
         status_to_set = "pending_capacity"
-        
+
     pending = await pending_requests_col.find_one({"id": sid, "institution_or_hostel_name": h})
     if pending:
         if status_to_set == "pending_capacity":
             # Just update the status in pending_requests
             await pending_requests_col.update_one({"id": sid}, {"$set": {"approval_status": "pending_capacity", "updated_at": now_iso()}})
-            return {"ok": True, "status": "pending_capacity", "message": "Limit reached, moved to pending capacity"}
-            
+            return {
+                "ok": True,
+                "status": "pending_capacity",
+                "message": "You have reached your subscribed student limit. Please upgrade your subscription to add more students."}
+
         pending["approval_status"] = "approved"
         pending["updated_at"] = now_iso()
+        # CRITICAL FIX: Stamp the admin_id so subscription validation always
+        # resolves through the correct Admin account, not a string match.
+        pending["admin_id"] = u["id"]
         pending.pop("_id", None)
         await users_col.insert_one(pending)
         await pending_requests_col.delete_one({"id": sid})
-        return {"ok": True, "status": "approved"}
         
+        import asyncio
+        asyncio.create_task(log_activity(None, u["id"], u["role"], h, "ADMIN_APPROVED_STUDENT", f"Student ID: {sid}"))
+        return {"ok": True, "status": "approved"}
+
     # If it's already in users_col (e.g., previously pending or rejected)
+    # CRITICAL FIX: Also stamp admin_id here so subscription validation works correctly.
     res = await users_col.update_one(
         {"id": sid, "role": "student", "institution_or_hostel_name": h},
-        {"$set": {"approval_status": status_to_set, "updated_at": now_iso()}},
+        {"$set": {"approval_status": status_to_set, "admin_id": u["id"], "updated_at": now_iso()}},
     )
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Student not found")
-        
-    return {"ok": True, "status": status_to_set, "message": "Limit reached" if status_to_set == "pending_capacity" else "Approved"}
+
+    if status_to_set == "pending_capacity":
+        return {
+            "ok": True,
+            "status": "pending_capacity",
+            "message": "You have reached your subscribed student limit. Please upgrade your subscription to add more students."}
+
+    import asyncio
+    asyncio.create_task(log_activity(None, u["id"], u["role"], h, "ADMIN_APPROVED_STUDENT", f"Student ID: {sid}"))
+    return {"ok": True, "status": "approved", "message": "Approved"}
 
 
 @api.post("/admin/students/{sid}/reject")
-async def admin_reject(sid: str, u: dict = Depends(require_active_subscription_admin)):
+async def admin_reject(sid: str, u: dict = Depends(
+        require_active_subscription_admin)):
     h = hostel_of(u)
-    
+
     pending = await pending_requests_col.find_one({"id": sid, "institution_or_hostel_name": h})
     if pending:
         await pending_requests_col.delete_one({"id": sid})
+        import asyncio
+        asyncio.create_task(log_activity(None, u["id"], u["role"], h, "ADMIN_REJECTED_STUDENT", f"Student ID: {sid}"))
         return {"ok": True}
-        
+
     res = await users_col.update_one(
         {"id": sid, "role": "student", "institution_or_hostel_name": h},
-        {"$set": {"approval_status": "rejected_or_blocked", "updated_at": now_iso()}},
+        {"$set": {"approval_status": "blocked", "updated_at": now_iso()}},
     )
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Student not found")
+        
+    import asyncio
+    asyncio.create_task(log_activity(None, u["id"], u["role"], h, "ADMIN_REJECTED_STUDENT", f"Student ID: {sid}"))
     return {"ok": True}
 
+@api.post("/admin/students/{sid}/block")
+async def admin_block(sid: str, u: dict = Depends(
+        require_active_subscription_admin)):
+    h = hostel_of(u)
 
-async def _aggregate_meal(hostel: str, meal: MealType, target_date: str, menu: dict) -> dict:
+    res = await users_col.update_one(
+        {"id": sid, "role": "student", "institution_or_hostel_name": h},
+        {"$set": {"approval_status": "blocked", "updated_at": now_iso()}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Student not found")
+    
+    # Invalidate their current session so they are kicked out
+    await rotate_session(sid)
+        
+    import asyncio
+    asyncio.create_task(log_activity(None, u["id"], u["role"], h, "ADMIN_BLOCKED_STUDENT", f"Student ID: {sid}"))
+    return {"ok": True, "message": "Student blocked"}
+
+@api.post("/admin/students/{sid}/remove")
+async def admin_remove(sid: str, u: dict = Depends(
+        require_active_subscription_admin)):
+    h = hostel_of(u)
+
+    # First check pending
+    pending = await pending_requests_col.find_one({"id": sid, "institution_or_hostel_name": h})
+    if pending:
+        await pending_requests_col.delete_one({"id": sid})
+        import asyncio
+        asyncio.create_task(log_activity(None, u["id"], u["role"], h, "ADMIN_REMOVED_STUDENT", f"Student ID: {sid} (Pending)"))
+        return {"ok": True, "message": "Student removed"}
+
+    res = await users_col.delete_one(
+        {"id": sid, "role": "student", "institution_or_hostel_name": h}
+    )
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Student not found")
+    
+    await rotate_session(sid)
+    
+    # Delete all orphaned student records
+    try:
+        await daily_plans_col.delete_many({"student_id": sid})
+        await menu_reactions_col.delete_many({"student_id": sid})
+        await feedback_col.delete_many({"student_id": sid})
+        await push_tokens_col.delete_many({"user_id": sid})
+        await student_notifications_col.delete_many({"recipient_id": sid})
+    except Exception as e:
+        logger.error(f"Failed to clean up orphaned records for removed student {sid}: {e}", exc_info=True)
+        
+    import asyncio
+    asyncio.create_task(log_activity(None, u["id"], u["role"], h, "ADMIN_REMOVED_STUDENT", f"Student ID: {sid}"))
+    return {"ok": True, "message": "Student removed"}
+
+
+async def _aggregate_meal(
+        hostel: str,
+        meal: MealType,
+        target_date: str,
+        menu: dict) -> dict:
     eating = 0
     not_eating = 0
     item_counts: Dict[str, int] = defaultdict(int)
@@ -2476,27 +3063,28 @@ async def _aggregate_meal(hostel: str, meal: MealType, target_date: str, menu: d
             for it in selected:
                 item_counts[it] += 1
 
-            for it in menu_items:
-                if it in selected:
-                    if reaction == "like":
+            if selected:
+                for it in menu_items:
+                    if it in selected:
                         item_multipliers[it] += 1.0
-                    elif reaction == "dislike":
-                        item_multipliers[it] += 0.70
                     else:
-                        item_multipliers[it] += 1.0
+                        item_multipliers[it] += 0.50
+            else:
+                if reaction == "like":
+                    val = 1.0
+                elif reaction == "dislike":
+                    val = 0.70
                 else:
-                    if reaction == "like":
-                        item_multipliers[it] += 0.90
-                    elif reaction == "dislike":
-                        item_multipliers[it] += 0.60
-                    else:
-                        item_multipliers[it] += 0.80
+                    val = 0.80
+                for it in menu_items:
+                    item_multipliers[it] += val
 
         elif st == "OFF":
             not_eating += 1
             r = (mp.get("reason_if_off") or "").strip()
             if r:
-                reason_counts["Other" if r.lower().startswith("other") else r] += 1
+                reason_counts["Other" if r.lower(
+                ).startswith("other") else r] += 1
 
             for it in menu_items:
                 item_multipliers[it] += 0.50
@@ -2505,14 +3093,14 @@ async def _aggregate_meal(hostel: str, meal: MealType, target_date: str, menu: d
         if ca:
             custom_counts[ca] += 1
 
-    # Students with NO plan entry at all → treat as 100% for every menu item
+    # Students with NO plan entry at all → treat as 70% for every menu item
     async for s in users_col.find(
         {"institution_or_hostel_name": hostel, "role": "student", "approval_status": "approved"},
         {"_id": 0, "id": 1},
     ):
         if s["id"] not in responded_student_ids:
             for it in menu_items:
-                item_multipliers[it] += 1.0
+                item_multipliers[it] += 0.70
 
     like = sum(1 for r in student_reactions.values() if r == "like")
     dislike = sum(1 for r in student_reactions.values() if r == "dislike")
@@ -2563,9 +3151,17 @@ async def admin_today(u: dict = Depends(require_active_subscription_admin)):
 
 @api.get("/admin/feedback")
 async def admin_feedback(
-    u: dict = Depends(require_active_subscription_admin), days: int = Query(7, ge=1, le=90)
-):
-    since = (date.fromisoformat(today_iso()) - timedelta(days=days - 1)).isoformat()
+    u: dict = Depends(require_active_subscription_admin),
+    days: int = Query(
+        7,
+        ge=1,
+        le=90)):
+    since = (
+        date.fromisoformat(
+            today_iso()) -
+        timedelta(
+            days=days -
+            1)).isoformat()
     items = [r async for r in feedback_col.find(
         {"hostel": hostel_of(u), "date": {"$gte": since}},
         {"_id": 0, "id": 1, "date": 1, "feedback_text": 1, "created_at": 1},
@@ -2578,9 +3174,13 @@ async def admin_feedback(
 # ---------------------------------------------------------------------------
 def _proj_ni(d: dict) -> dict:
     return {
-        "id": d["id"], "item_name": d["item_name"], "meal_type": d["meal_type"],
-        "quantity_per_person": d["quantity_per_person"], "unit": d["unit"],
-        "price_per_unit": d["price_per_unit"], "price_unit": d["price_unit"],
+        "id": d["id"],
+        "item_name": d["item_name"],
+        "meal_type": d["meal_type"],
+        "quantity_per_person": d["quantity_per_person"],
+        "unit": d["unit"],
+        "price_per_unit": d["price_per_unit"],
+        "price_unit": d["price_unit"],
         "updated_at": d.get("updated_at"),
     }
 
@@ -2594,13 +3194,15 @@ async def admin_ni_list(u: dict = Depends(require_active_subscription_admin)):
 
 
 @api.post("/admin/necessary-info", status_code=201)
-async def admin_ni_create(payload: NecessaryItemInput, u: dict = Depends(require_active_subscription_admin)):
+async def admin_ni_create(payload: NecessaryItemInput,
+                          u: dict = Depends(require_active_subscription_admin)):
     h = hostel_of(u)
     if await necessary_info_col.find_one(
         {"hostel": h, "item_name": payload.item_name, "meal_type": payload.meal_type},
         {"_id": 0, "id": 1},
     ):
-        raise HTTPException(status_code=400, detail="Item already exists for this meal")
+        raise HTTPException(status_code=400,
+                            detail="Item already exists for this meal")
     now = now_iso()
     doc = {"id": str(uuid.uuid4()), "hostel": h, **payload.model_dump(),
            "created_at": now, "updated_at": now}
@@ -2610,7 +3212,10 @@ async def admin_ni_create(payload: NecessaryItemInput, u: dict = Depends(require
 
 
 @api.put("/admin/necessary-info/{iid}")
-async def admin_ni_update(iid: str, payload: NecessaryItemInput, u: dict = Depends(require_active_subscription_admin)):
+async def admin_ni_update(
+        iid: str,
+        payload: NecessaryItemInput,
+        u: dict = Depends(require_active_subscription_admin)):
     res = await necessary_info_col.update_one(
         {"id": iid, "hostel": hostel_of(u)},
         {"$set": {**payload.model_dump(), "updated_at": now_iso()}},
@@ -2622,7 +3227,8 @@ async def admin_ni_update(iid: str, payload: NecessaryItemInput, u: dict = Depen
 
 
 @api.delete("/admin/necessary-info/{iid}")
-async def admin_ni_delete(iid: str, u: dict = Depends(require_active_subscription_admin)):
+async def admin_ni_delete(iid: str, u: dict = Depends(
+        require_active_subscription_admin)):
     res = await necessary_info_col.delete_one({"id": iid, "hostel": hostel_of(u)})
     if res.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Item not found")
@@ -2633,21 +3239,30 @@ async def admin_ni_delete(iid: str, u: dict = Depends(require_active_subscriptio
 # ADMIN: Menus
 # ---------------------------------------------------------------------------
 @api.get("/admin/menus")
-async def admin_menu_list(u: dict = Depends(require_active_subscription_admin)):
+async def admin_menu_list(u: dict = Depends(
+        require_active_subscription_admin)):
     h = hostel_of(u)
     rows = []
     for d in DAYS:
         m = await menus_col.find_one({"hostel": h, "day": d}, {"_id": 0})
-        rows.append(project_menu(m) if m else {
-            "day": d, "breakfast_items": [], "lunch_items": [], "dinner_items": [],
-            "breakfast_custom_question": None, "lunch_custom_question": None,
-            "dinner_custom_question": None,
-        })
+        rows.append(
+            project_menu(m) if m else {
+                "day": d,
+                "breakfast_items": [],
+                "lunch_items": [],
+                "dinner_items": [],
+                "breakfast_custom_question": None,
+                "lunch_custom_question": None,
+                "dinner_custom_question": None,
+            })
     return {"days": rows}
 
 
 @api.put("/admin/menus/{day}")
-async def admin_menu_upsert(day: str, payload: MenuUpsert, u: dict = Depends(require_active_subscription_admin)):
+async def admin_menu_upsert(
+        day: str,
+        payload: MenuUpsert,
+        u: dict = Depends(require_active_subscription_admin)):
     if day not in DAYS:
         raise HTTPException(status_code=400, detail="Invalid day")
     h = hostel_of(u)
@@ -2675,7 +3290,10 @@ async def admin_dashboard(
 ):
     h = hostel_of(u)
     base = date.fromisoformat(today_iso())
-    target_date = (base + timedelta(days=1)).isoformat() if for_ == "tomorrow" else base.isoformat()
+    target_date = (
+        base +
+        timedelta(
+            days=1)).isoformat() if for_ == "tomorrow" else base.isoformat()
     day = day_of_week(date.fromisoformat(target_date))
     menu = await menus_col.find_one({"hostel": h, "day": day}, {"_id": 0}) or {}
 
@@ -2683,16 +3301,19 @@ async def admin_dashboard(
     async for r in necessary_info_col.find({"hostel": h}, {"_id": 0}):
         ni_lookup[f"{r['meal_type']}:{r['item_name'].lower()}"] = r
 
-    out: Dict[str, Any] = {"date": target_date, "day": day, "for": for_, "meals": {}}
+    out: Dict[str, Any] = {"date": target_date,
+                           "day": day, "for": for_, "meals": {}}
     most = {"item": None, "count": -1}
     least = {"item": None, "count": 10**9}
 
     for meal in ("breakfast", "lunch", "dinner"):
-        agg = await _aggregate_meal(h, meal, target_date, menu)  # type: ignore[arg-type]
+        # type: ignore[arg-type]
+        agg = await _aggregate_meal(h, meal, target_date, menu)
         items_out, warnings = [], []
         menu_items = menu.get(f"{meal}_items", []) if menu else []
         if not menu_items:
-            warnings.append(f"Menu not added for {meal}. Add menu in Necessary Info.")
+            warnings.append(
+                f"Menu not added for {meal}. Add menu in Necessary Info.")
         for row in agg["item_counts"]:
             ni = ni_lookup.get(f"{meal}:{row['item_name'].lower()}")
             if not ni:
@@ -2705,7 +3326,10 @@ async def admin_dashboard(
                     "suggested": None, "display": None,
                 })
             else:
-                multiplier = agg.get("item_multipliers", {}).get(row["item_name"], float(row["count"]))
+                multiplier = agg.get(
+                    "item_multipliers", {}).get(
+                    row["item_name"], float(
+                        row["count"]))
                 raw = multiplier * float(ni["quantity_per_person"])
                 items_out.append({
                     "item_name": row["item_name"], "preference_count": row["count"],
@@ -2754,7 +3378,10 @@ async def _price_for(hostel: str, item_name: str, meal: str) -> Optional[dict]:
     )
 
 
-async def _compute_wastage_doc(hostel: str, target_date: str, payload: WastageUpsert) -> dict:
+async def _compute_wastage_doc(
+        hostel: str,
+        target_date: str,
+        payload: WastageUpsert) -> dict:
     out: Dict[str, Any] = {
         "hostel": hostel, "date": target_date,
         "breakfast_items": [], "lunch_items": [], "dinner_items": [],
@@ -2762,8 +3389,8 @@ async def _compute_wastage_doc(hostel: str, target_date: str, payload: WastageUp
         "breakfast_loss": 0.0, "lunch_loss": 0.0, "dinner_loss": 0.0,
     }
     for meal, items in (("breakfast", payload.breakfast_items),
-                       ("lunch", payload.lunch_items),
-                       ("dinner", payload.dinner_items)):
+                        ("lunch", payload.lunch_items),
+                        ("dinner", payload.dinner_items)):
         kg = 0.0
         loss = 0.0
         rich = []
@@ -2777,20 +3404,30 @@ async def _compute_wastage_doc(hostel: str, target_date: str, payload: WastageUp
                     pu = ni["price_unit"]
             loss_item = 0.0
             if price is not None and pu is not None:
-                loss_item = round(normalize_to_price_unit(it.quantity, it.unit, pu) * price, 2)
+                loss_item = round(
+                    normalize_to_price_unit(
+                        it.quantity, it.unit, pu) * price, 2)
             kg += to_kg_equiv(it.quantity, it.unit)
             loss += loss_item
-            rich.append({
-                "item_name": it.item_name, "quantity": float(it.quantity), "unit": it.unit,
-                "price_per_unit": price, "price_unit": pu, "loss": loss_item,
-            })
+            rich.append({"item_name": it.item_name,
+                         "quantity": float(it.quantity),
+                         "unit": it.unit,
+                         "price_per_unit": price,
+                         "price_unit": pu,
+                         "loss": loss_item,
+                         })
         out[f"{meal}_items"] = rich
         out[f"{meal}_wastage_kg"] = round(kg, 2)
         out[f"{meal}_loss"] = round(loss, 2)
-    item_loss_total = out["breakfast_loss"] + out["lunch_loss"] + out["dinner_loss"]
+    item_loss_total = out["breakfast_loss"] + \
+        out["lunch_loss"] + out["dinner_loss"]
     if payload.manual_total_cost is not None:
         out["manual_total_cost"] = round(float(payload.manual_total_cost), 2)
-        out["total_loss"] = round(item_loss_total + float(payload.manual_total_cost), 2)
+        out["total_loss"] = round(
+            item_loss_total +
+            float(
+                payload.manual_total_cost),
+            2)
     else:
         out["total_loss"] = round(item_loss_total, 2)
     out["item_loss_total"] = round(item_loss_total, 2)
@@ -2799,8 +3436,9 @@ async def _compute_wastage_doc(hostel: str, target_date: str, payload: WastageUp
 
 @api.put("/admin/wastage/{target_date}")
 async def admin_wastage_upsert(
-    target_date: str, payload: WastageUpsert, u: dict = Depends(require_active_subscription_admin)
-):
+        target_date: str,
+        payload: WastageUpsert,
+        u: dict = Depends(require_active_subscription_admin)):
     try:
         date.fromisoformat(target_date)
     except ValueError:
@@ -2819,7 +3457,8 @@ async def admin_wastage_upsert(
 
 
 @api.get("/admin/wastage/today")
-async def admin_wastage_today(u: dict = Depends(require_active_subscription_admin)):
+async def admin_wastage_today(
+        u: dict = Depends(require_active_subscription_admin)):
     h = hostel_of(u)
     today = today_iso()
     td = date.fromisoformat(today)
@@ -2838,11 +3477,16 @@ async def admin_wastage_today(u: dict = Depends(require_active_subscription_admi
     )]
     avg = round(sum(losses) / len(losses), 2) if losses else None
     today_loss = (today_doc or {}).get("total_loss")
-    saved = round(avg - today_loss, 2) if avg is not None and today_loss is not None else None
+    saved = round(
+        avg - today_loss,
+        2) if avg is not None and today_loss is not None else None
     return {
         "date": today,
-        "today": today_doc, "yesterday": yesterday_doc, "last_week_same_day": last_week_doc,
-        "average_loss_30d": avg, "saved_amount_vs_avg": saved,
+        "today": today_doc,
+        "yesterday": yesterday_doc,
+        "last_week_same_day": last_week_doc,
+        "average_loss_30d": avg,
+        "saved_amount_vs_avg": saved,
     }
 
 
@@ -2863,10 +3507,27 @@ async def admin_wastage_trend(
     losses: List[float] = []
     for r in rows:
         if meal == "all":
-            wv = round(r.get("breakfast_wastage_kg", 0) + r.get("lunch_wastage_kg", 0)
-                       + r.get("dinner_wastage_kg", 0), 2)
-            ls = r.get("total_loss") or (r.get("breakfast_loss", 0) + r.get("lunch_loss", 0)
-                                          + r.get("dinner_loss", 0))
+            wv = round(
+                r.get(
+                    "breakfast_wastage_kg",
+                    0) +
+                r.get(
+                    "lunch_wastage_kg",
+                    0) +
+                r.get(
+                    "dinner_wastage_kg",
+                    0),
+                2)
+            ls = r.get("total_loss") or (
+                r.get(
+                    "breakfast_loss",
+                    0) +
+                r.get(
+                    "lunch_loss",
+                    0) +
+                r.get(
+                    "dinner_loss",
+                    0))
         else:
             wv = r.get(f"{meal}_wastage_kg", 0)
             ls = r.get(f"{meal}_loss", 0)
@@ -2901,18 +3562,25 @@ SETTINGS_DEFAULTS = {
 
 
 @api.get("/admin/settings")
-async def admin_settings_get(u: dict = Depends(require_active_subscription_admin)):
+async def admin_settings_get(u: dict = Depends(
+        require_active_subscription_admin)):
     h = hostel_of(u)
     doc = await settings_col.find_one({"hostel": h}, {"_id": 0})
     if not doc:
-        doc = {"id": h, "hostel": h, **SETTINGS_DEFAULTS, "updated_at": now_iso()}
+        doc = {
+            "id": h,
+            "hostel": h,
+            **SETTINGS_DEFAULTS,
+            "updated_at": now_iso()}
         await settings_col.insert_one(doc)
         doc.pop("_id", None)
     return doc
 
 
 @api.put("/admin/settings")
-async def admin_settings_put(payload: AppSettingsInput, u: dict = Depends(require_admin)):
+async def admin_settings_put(
+        payload: AppSettingsInput,
+        u: dict = Depends(require_admin)):
     h = hostel_of(u)
     body = {k: v for k, v in payload.model_dump().items() if v is not None}
     if not body:
@@ -3017,13 +3685,13 @@ async def _ensure_indexes_and_migrate():
         [("user_id", 1), ("device_token", 1)], unique=True
     )
     await push_tokens_col.create_index([("hostel", 1), ("role", 1)])
-    
+
     # Subscription & Billing indexes
     await subscriptions_col.create_index("institution_or_hostel_name", unique=True)
     await transactions_col.create_index([("institution_or_hostel_name", 1), ("created_at", -1)])
     await invoices_col.create_index([("institution_or_hostel_name", 1), ("created_at", -1)])
     await subscription_events_col.create_index([("institution_or_hostel_name", 1), ("event_date", -1)])
-    
+
     # Activity logs
     await activity_logs_col.create_index([("institution", 1), ("timestamp", -1)])
     await activity_logs_col.create_index("user_id")
@@ -3038,164 +3706,196 @@ async def _ensure_indexes_and_migrate():
     except Exception:
         pass
 
+    # -------------------------------------------------------------------------
+    # ONE-TIME MIGRATION: Backfill admin_id on approved students that were
+    # approved before this fix was deployed. This ensures all existing students
+    # can log in immediately without re-approval.
+    # -------------------------------------------------------------------------
+    try:
+        # Build a mapping of institution_name → admin_id for fast lookup
+        admin_map: dict = {}
+        async for admin_doc in users_col.find({"role": "admin"}, {"_id": 0, "id": 1, "institution_or_hostel_name": 1}):
+            inst = admin_doc.get("institution_or_hostel_name")
+            if inst and inst not in admin_map:
+                admin_map[inst] = admin_doc["id"]
 
-SCHEDULER_INTERVAL_SEC = int(os.environ.get("NOTIF_SCHEDULER_INTERVAL_SEC", "30"))
+        if admin_map:
+            backfill_count = 0
+            async for student in users_col.find(
+                {"role": "student", "approval_status": "approved", "admin_id": {"$exists": False}},
+                {"_id": 0, "id": 1, "institution_or_hostel_name": 1}
+            ):
+                inst = student.get("institution_or_hostel_name", "")
+                mapped_admin_id = admin_map.get(inst)
+                if mapped_admin_id:
+                    await users_col.update_one(
+                        {"id": student["id"]},
+                        {"$set": {"admin_id": mapped_admin_id}}
+                    )
+                    backfill_count += 1
+
+            if backfill_count:
+                logger.info(
+                    "admin_id backfill migration: stamped admin_id on %d approved student(s).",
+                    backfill_count
+                )
+    except Exception as e:
+        logger.warning("admin_id backfill migration failed (non-fatal): %s", e, exc_info=True)
+
+
+SCHEDULER_INTERVAL_SEC = int(
+    os.environ.get(
+        "NOTIF_SCHEDULER_INTERVAL_SEC",
+        "60"))
 _scheduler_task: Optional[asyncio.Task] = None
 
 
-async def _dispatch_recurring_notifications() -> int:
-    """Find active recurring notifications whose scheduled time matches the current minute,
-    and whose startDate <= today <= (endDate or forever).
-    Dispatch them and record in standard notifications_col for history.
+async def _dispatch_scheduled_notifications() -> int:
+    """Find active scheduled notifications whose time and day match the current time.
+    Dispatch them to students and log the delivery.
     """
     now_dt = datetime.now(IST)
     today_str = now_dt.date().isoformat()
     current_time_str = now_dt.strftime("%H:%M")
-    
-    # We want to ensure we don't send the same daily notif twice in one day.
-    # We can check if lastSentAt starts with today_str
+    current_day = now_dt.strftime("%A") # e.g. "Monday"
     
     cursor = scheduled_notifications_col.find({
         "isActive": True,
-        "scheduledTime": current_time_str,
-        "startDate": {"$lte": today_str}
+        "scheduledTime": current_time_str
     })
     
     dispatched = 0
     async for doc in cursor:
-        if doc.get("endDate") and doc["endDate"] < today_str:
-            continue
-            
         last_sent = doc.get("lastSentAt")
-        if last_sent and last_sent.startswith(today_str):
+        # Prevent double sending in the same minute
+        if last_sent and last_sent[:16] == now_dt.isoformat()[:16]:
             continue
             
-        if doc.get("notificationType") == "Weekly":
-            start_date = datetime.fromisoformat(doc["startDate"]).date()
-            if (now_dt.date() - start_date).days % 7 != 0:
-                continue
-        elif doc.get("notificationType") == "One Time":
-            if doc["startDate"] != today_str:
-                continue
-                
+        repeat_option = doc.get("repeatOption")
+        days_selection = doc.get("daysSelection", [])
+        
+        should_send = False
+        
+        if repeat_option == "Send Once":
+            should_send = True
+        elif repeat_option == "Repeat Every Selected Day":
+            if current_day in days_selection:
+                should_send = True
+        elif repeat_option == "Repeat Weekly":
+            if current_day in days_selection:
+                should_send = True
+        else:
+            # Fallback for old 'Weekly' or 'Daily'
+            should_send = True
+
+        if not should_send:
+            continue
+            
         # Send it!
         try:
-            fake_admin = {"institution_or_hostel_name": doc["hostel"]}
-            recipients = await _recipients_for(fake_admin, "student", None)
+            h = doc["hostel"]
+            admin_id_val = doc.get("adminId")
+            recipients = []
+            if admin_id_val:
+                async for user in users_col.find({
+                    "role": "student",
+                    "approval_status": "approved",
+                    "$or": [{"admin_id": admin_id_val}, {"institution_or_hostel_name": h}]
+                }):
+                    recipients.append(user["id"])
             
-            # Save an instance in notifications_col so students see it in history
-            instance_id = str(uuid.uuid4())
-            notif_doc = {
-                "id": instance_id,
-                "hostel": doc["hostel"],
-                "title": doc["title"],
-                "body": doc["message"],
-                "audience": "student",
-                "recipient_id": None,
-                "type": "announcement",
-                "action_url": f"/notification/{instance_id}",
-                "scheduled_for": today_str,
-                "send_at": now_dt.isoformat(),
-                "sent": True,
-                "sent_at": now_dt.isoformat(),
-                "created_by": doc["adminId"],
-                "read_by": [],
-                "created_at": now_dt.isoformat(),
-            }
-            await notifications_col.insert_one(notif_doc)
-            
-            try:
-                await send_push(
-                    recipients,
-                    {"title": doc["title"], "message": doc["message"],
-                     "subtext": "MessMate", "action_url": f"/notification/{instance_id}"},
-                    idempotency_key=instance_id,
-                )
-            except Exception as e:
-                logger.warning("recurring push failed (%s): %s", doc.get("id"), e)
+            if recipients:
+                docs = []
+                now = now_iso()
+                indian_months = ["January","February","March","April","May","June",
+                                 "July","August","September","October","November","December"]
+                indian_date = f"{now_dt.day:02d} {indian_months[now_dt.month-1]} {now_dt.year}"
+                indian_day = now_dt.strftime("%A")
+                indian_time = now_dt.strftime("%I:%M %p")
+                for r_id in recipients:
+                    docs.append({
+                        "id": str(uuid.uuid4()),
+                        "recipient_id": r_id,
+                        "title": doc["title"],
+                        "message": doc["message"],
+                        "date": indian_date,
+                        "day": indian_day,
+                        "time": indian_time,
+                        "created_at": now,
+                        "read_status": False,
+                        "sender_id": doc.get("adminId")
+                    })
                 
+                await student_notifications_col.insert_many(docs)
+                
+                await notification_logs_col.insert_one({
+                    "id": str(uuid.uuid4()),
+                    "admin_id": doc.get("adminId"),
+                    "hostel": h,
+                    "title": doc["title"],
+                    "message": doc["message"],
+                    "type": "Scheduled",
+                    "delivered_count": len(recipients),
+                    "delivered_at": now
+                })
+                
+                try:
+                    await send_push(
+                        recipients,
+                        {"title": doc["title"], "message": doc["message"],
+                         "subtext": "MessMate", "action_url": "/notifications"},
+                        idempotency_key=str(uuid.uuid4()),
+                    )
+                except Exception as e:
+                    logger.warning("scheduled push failed (%s): %s", doc.get("id"), e, exc_info=True)
+            
             # Update lastSentAt
             await scheduled_notifications_col.update_one(
                 {"id": doc["id"]},
                 {
                     "$set": {"lastSentAt": now_dt.isoformat()},
-                    "$inc": {"stats.totalRecipients": len(recipients), "stats.delivered": len(recipients)}
                 }
             )
             dispatched += 1
             
             # If One Time, mark inactive
-            if doc.get("notificationType") == "One Time":
+            if repeat_option == "Send Once":
                 await scheduled_notifications_col.update_one(
                     {"id": doc["id"]},
                     {"$set": {"isActive": False}}
                 )
                 
         except Exception as e:
-            logger.warning("scheduler dispatch recurring failed for %s: %s", doc.get("id"), e)
-    return dispatched
-
-async def _dispatch_due_notifications() -> int:
-    """Find scheduled notifications whose send_at has arrived and fire them.
-    Returns the number of notifications dispatched.
-    """
-    now_dt = datetime.now(IST)
-    now = now_dt.isoformat()
-    cursor = notifications_col.find(
-        {"sent": False, "send_at": {"$lte": now}},
-        {"_id": 0},
-    )
-    dispatched = 0
-    async for doc in cursor:
-        # Resolve recipients for this hostel
-        try:
-            fake_admin = {"institution_or_hostel_name": doc["hostel"]}
-            recipients = await _recipients_for(
-                fake_admin, doc.get("audience", "all"), doc.get("recipient_id")
-            )
-            try:
-                await send_push(
-                    recipients,
-                    {"title": doc["title"], "message": doc["body"],
-                     "subtext": "MessMate", "action_url": doc.get("action_url") or "/notifications"},
-                    idempotency_key=doc["id"],
-                )
-            except Exception as e:
-                logger.warning("scheduled push failed (%s): %s", doc.get("id"), e)
-            await notifications_col.update_one(
-                {"id": doc["id"]},
-                {"$set": {"sent": True, "sent_at": now_iso()}},
-            )
-            dispatched += 1
-        except Exception as e:
-            logger.warning("scheduler dispatch failed for %s: %s", doc.get("id"), e)
-            
-    # Also dispatch recurring ones
-    dispatched += await _dispatch_recurring_notifications()
-    
+            logger.warning(
+                "scheduler dispatch failed for %s: %s",
+                doc.get("id"),
+                e, exc_info=True)
     return dispatched
 
 
 async def _scheduler_loop() -> None:
     """Long-running background task that polls for due notifications."""
-    logger.info("Notification scheduler started (interval=%ss)", SCHEDULER_INTERVAL_SEC)
+    logger.info(
+        "Notification scheduler started (interval=%ss)",
+        SCHEDULER_INTERVAL_SEC)
     while True:
         try:
-            await _dispatch_due_notifications()
+            await _dispatch_scheduled_notifications()
         except asyncio.CancelledError:
             raise
         except Exception as e:  # pragma: no cover — defensive
-            logger.warning("scheduler loop error (non-fatal): %s", e)
+            logger.warning("scheduler loop error (non-fatal): %s", e, exc_info=True)
         await asyncio.sleep(SCHEDULER_INTERVAL_SEC)
 
 
 @app.on_event("startup")
 async def on_startup():
     await _ensure_indexes_and_migrate()
-    if SMTP_CONFIGURED:
-        logger.info("MessMate API ready — SMTP email OTP active (%s)", SMTP_HOST)
+    if GMAIL_CONFIGURED:
+        logger.info("MessMate API ready — Gmail API email OTP active")
     else:
-        logger.info("MessMate API ready — SMTP NOT configured. OTPs are logged to console (dev mode).")
+        logger.info(
+            "MessMate API ready — Gmail API NOT configured. OTPs are logged to console (dev mode).")
     global _scheduler_task
     if _scheduler_task is None or _scheduler_task.done():
         _scheduler_task = asyncio.create_task(_scheduler_loop())
@@ -3222,34 +3922,47 @@ async def on_shutdown():
 # Mount + CORS
 # ---------------------------------------------------------------------------
 app.include_router(api)
+
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     # Global exception handler for uncaught errors
     logger.error(f"Unhandled exception: {exc}", exc_info=True)
     return JSONResponse(
-        status_code=500,
-        content={"detail": "An unexpected error occurred. Please try again later."}
-    )
+        status_code=500, content={
+            "detail": "An unexpected error occurred. Please try again later."})
+
 
 class PerformanceMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
+        logger.info(f"[API Request] {request.method} {request.url.path}")
         start_time = time.time()
-        response = await call_next(request)
-        process_time = time.time() - start_time
-        response.headers["X-Process-Time"] = str(process_time)
-        
-        # Log slow requests (>500ms)
-        if process_time > 0.5:
-            logger.warning(f"SLOW_REQUEST: {request.method} {request.url.path} took {process_time:.4f}s")
-        else:
-            logger.info(f"{request.method} {request.url.path} completed in {process_time:.4f}s")
-            
-        return response
+        try:
+            response = await call_next(request)
+            process_time = time.time() - start_time
+            response.headers["X-Process-Time"] = str(process_time)
+
+            # Log slow requests (>500ms)
+            if process_time > 0.5:
+                logger.warning(
+                    f"SLOW_REQUEST: {request.method} {request.url.path} took {process_time:.4f}s - Status: {response.status_code}"
+                )
+            else:
+                logger.info(
+                    f"[API Response] {request.method} {request.url.path} completed in {process_time:.4f}s - Status: {response.status_code}"
+                )
+
+            return response
+        except Exception as e:
+            process_time = time.time() - start_time
+            logger.error(f"[API Error] {request.method} {request.url.path} failed after {process_time:.4f}s with exception: {e}", exc_info=True)
+            return JSONResponse(
+                status_code=500,
+                content={"detail": "Internal Server Error"},
+                headers={"Access-Control-Allow-Origin": "*"}
+            )
+
 
 app.add_middleware(PerformanceMiddleware)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], allow_credentials=True,
-    allow_methods=["*"], allow_headers=["*"],
-)
+

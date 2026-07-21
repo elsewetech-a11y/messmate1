@@ -1,5 +1,5 @@
 import React from "react";
-import { StyleSheet, View, Text, SafeAreaView } from "react-native";
+import { StyleSheet, Text, View, SafeAreaView, Linking } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Feather } from "@expo/vector-icons";
 import { Button } from "@/src/components/Button";
@@ -44,9 +44,7 @@ export function PaymentFailedScreen() {
           <Button 
             label="Contact Support" 
             variant="secondary"
-            onPress={() => {
-              // Open mailto link or support screen
-            }}
+            onPress={() => Linking.openURL('mailto:elsewe.tech@gmail.com')}
             style={styles.supportButton}
           />
         </View>

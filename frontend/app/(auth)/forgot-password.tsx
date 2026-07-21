@@ -4,6 +4,7 @@ import { Feather } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import React, { useMemo, useState } from "react";
 import {
+  Alert,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -35,7 +36,14 @@ export default function ForgotPassword() {
     }
     setLoading(true);
     try {
-      await api.forgotPassword({ email: email.trim() });
+      const res = await api.forgotPassword({ email: email.trim() });
+      if (res.dev_otp) {
+        if (Platform.OS === "web") {
+          window.alert(`[DEV MODE] Your OTP is: ${res.dev_otp}`);
+        } else {
+          Alert.alert("DEV MODE", `Your OTP is: ${res.dev_otp}`);
+        }
+      }
       router.push({
         pathname: "/(auth)/forgot-password-otp",
         params: { email: email.trim() },

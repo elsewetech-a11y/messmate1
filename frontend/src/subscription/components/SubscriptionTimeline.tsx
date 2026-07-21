@@ -3,6 +3,7 @@ import { StyleSheet, Text, View } from "react-native";
 import { Feather } from "@expo/vector-icons";
 import { radius, shadow, typography, useTheme, type ThemeColors } from "@/src/theme";
 import type { SubscriptionEventPublic } from "@/src/api/client";
+import { formatISOasDateIST } from "@/src/utils/istDate";
 
 type SubscriptionTimelineProps = {
   events: SubscriptionEventPublic[];
@@ -38,11 +39,7 @@ export function SubscriptionTimeline({ events }: SubscriptionTimelineProps) {
       <View style={styles.timeline}>
         {events.map((event, index) => {
           const isLast = index === events.length - 1;
-          const dateStr = new Date(event.event_date).toLocaleDateString(undefined, {
-            day: 'numeric',
-            month: 'short',
-            year: 'numeric'
-          });
+          const dateStr = formatISOasDateIST(event.event_date);
 
           return (
             <View key={event.id} style={styles.eventRow}>

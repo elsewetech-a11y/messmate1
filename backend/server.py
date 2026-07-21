@@ -1870,13 +1870,11 @@ async def verify_payment(
 
     if is_upgrade:
         title = "Capacity Upgraded Successfully"
-        desc = f"Your capacity has been upgraded to {
-            order['student_count']} students."
+        desc = f"Your capacity has been upgraded to {order['student_count']} students."
         template = "CapacityUpgrade"
     else:
         title = "Payment Successful"
-        desc = f"Your subscription is now active until {
-            new_end.strftime('%d %b %Y')}."
+        desc = f"Your subscription is now active until {new_end.strftime('%d %b %Y')}."
         template = "PaymentSuccess"
 
     context = {

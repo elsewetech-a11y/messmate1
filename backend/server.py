@@ -2024,8 +2024,7 @@ async def report_payment_failed(
     from services.notification_service import notify_institution
     import asyncio
     title = "Payment Failed"
-    desc = f"Unfortunately your subscription payment was unsuccessful. Reason: {
-        payload.error_message}"
+    desc = f"Unfortunately your subscription payment was unsuccessful. Reason: {payload.error_message}"
     context = {
         "institution": u["institution_or_hostel_name"],
         "reason": payload.error_message,

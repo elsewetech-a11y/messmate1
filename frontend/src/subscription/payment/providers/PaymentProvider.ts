@@ -39,6 +39,47 @@ export class MockPaymentProvider implements PaymentProvider {
   }
 }
 
-// In the future:
-// export class RazorpayProvider implements PaymentProvider { ... }
-// export class CashfreeProvider implements PaymentProvider { ... }
+import RazorpayCheckout from 'react-native-razorpay';
+
+export class RazorpayProvider implements PaymentProvider {
+  processPayment(options: {
+    orderId: string;
+    amount: number;
+    currency: string;
+    institutionName: string;
+    email: string;
+    contact: string;
+  }): Promise<{ paymentId: string; signature: string }> {
+    return new Promise((resolve, reject) => {
+      const checkoutOptions = {
+        description: 'MessMate Subscription',
+        image: 'https://messmate.app/logo.png', // Optional, replace with actual logo
+        currency: options.currency,
+        key: process.env.EXPO_PUBLIC_RAZORPAY_KEY_ID || '', // Will require env var
+        amount: options.amount * 100, // Amount in paise
+        name: 'MessMate',
+        order_id: options.orderId,
+        prefill: {
+          email: options.email,
+          contact: options.contact || '9999999999',
+          name: options.institutionName
+        },
+        theme: { color: '#1a73e8' }
+      };
+
+      RazorpayCheckout.open(checkoutOptions).then((data: any) => {
+        resolve({
+          paymentId: data.razorpay_payment_id,
+          signature: data.razorpay_signature
+        });
+      }).catch((error: any) => {
+        console.error("Razorpay error detailed:", error);
+        // Error codes:
+        // 0 - Network Error
+        // 1 - Initialization Error
+        // 2 - Payment Cancelled
+        reject(new Error(error.description || 'Payment failed or cancelled by user'));
+      });
+    });
+  }
+}

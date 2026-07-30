@@ -19,7 +19,6 @@ export default function AdminTabsLayout() {
   const { c } = useTheme();
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: c.bg }}>
-      <SubscriptionBanner />
       <Tabs
         tabBar={(props) => <GlassTabBar {...props} icons={ADMIN_ICONS} />}
         screenOptions={{

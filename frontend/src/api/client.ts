@@ -407,7 +407,11 @@ async function request<T>(
   options: { method?: string; body?: any; token?: string | null } = {},
 ): Promise<T> {
   const { method = "GET", body, token } = options;
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "bypass-tunnel-reminder": "true",  // Required for localtunnel (loca.lt) to bypass reminder page
+    "ngrok-skip-browser-warning": "true", // Required for ngrok to bypass warning page
+  };
   if (token) headers.Authorization = `Bearer ${token}`;
 
   const finalPath = path.startsWith("/api") ? path : `/api${path}`;

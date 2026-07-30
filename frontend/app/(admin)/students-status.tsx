@@ -493,7 +493,7 @@ export default function AdminStudentsStatus() {
 
         {/* Summary tiles */}
         <View style={styles.tilesGrid}>
-          <TouchableOpacity activeOpacity={0.8} onPress={() => fetchList("all")} style={{flex: 1}}>
+          <TouchableOpacity activeOpacity={0.8} onPress={() => fetchList("all")} style={{ width: '48%' }}>
             <StatTile
               testID="tile-total"
               icon="users"
@@ -501,7 +501,7 @@ export default function AdminStudentsStatus() {
               value={summary?.total_students ?? 0}
             />
           </TouchableOpacity>
-          <TouchableOpacity activeOpacity={0.8} onPress={() => fetchList("approved")} style={{flex: 1}}>
+          <TouchableOpacity activeOpacity={0.8} onPress={() => fetchList("approved")} style={{ width: '48%' }}>
             <StatTile
               testID="tile-approved"
               icon="check-circle"
@@ -510,7 +510,7 @@ export default function AdminStudentsStatus() {
               value={summary?.approved ?? 0}
             />
           </TouchableOpacity>
-          <TouchableOpacity activeOpacity={0.8} onPress={() => fetchList("pending")} style={{flex: 1}}>
+          <TouchableOpacity activeOpacity={0.8} onPress={() => fetchList("pending")} style={{ width: '48%' }}>
             <StatTile
               testID="tile-pending"
               icon="clock"
@@ -519,7 +519,7 @@ export default function AdminStudentsStatus() {
               value={summary?.pending ?? 0}
             />
           </TouchableOpacity>
-          <TouchableOpacity activeOpacity={0.8} onPress={() => fetchList("blocked")} style={{flex: 1}}>
+          <TouchableOpacity activeOpacity={0.8} onPress={() => fetchList("blocked")} style={{ width: '48%' }}>
             <StatTile
               testID="tile-blocked"
               icon="x-octagon"

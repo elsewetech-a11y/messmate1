@@ -13,7 +13,7 @@ export const calculateMonthlyPrice = (students: number) => {
 };
 
 export const calculateYearlyPrice = (students: number) => {
-  return students * PRICING_CONFIG.YEARLY_PRICE; // Yearly total
+  return students * PRICING_CONFIG.YEARLY_PRICE * 12; // Yearly total
 };
 
 export const calculateYearlyPricePerMonth = (students: number) => {

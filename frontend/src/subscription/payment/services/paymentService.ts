@@ -1,8 +1,8 @@
 import { api, type OrderCreateRequest, type OrderCreateResponse, type PaymentVerifyRequest, type TransactionPublic, type InvoicePublic } from "@/src/api/client";
-import { MockPaymentProvider, type PaymentProvider } from "../providers/PaymentProvider";
+import { RazorpayProvider, type PaymentProvider } from "../providers/PaymentProvider";
 
-// Use mock provider for now
-const provider: PaymentProvider = new MockPaymentProvider();
+// Use Razorpay provider
+const provider: PaymentProvider = new RazorpayProvider();
 
 export const paymentService = {
   async createOrder(token: string, payload: OrderCreateRequest): Promise<OrderCreateResponse> {

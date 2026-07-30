@@ -204,8 +204,6 @@ export default function AdminDashboard() {
           />
         }
       >
-        <SubscriptionWidget />
-
         <View style={styles.header}>
           <View>
             <Text style={styles.eyebrow}>{dateLabel}</Text>
@@ -289,6 +287,8 @@ export default function AdminDashboard() {
             ) : null}
           </>
         )}
+
+        <SubscriptionWidget />
       </ScrollView>
     </SafeAreaView>
     </SubscriptionGuard>

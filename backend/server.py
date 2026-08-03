@@ -15,6 +15,9 @@ import os
 import secrets
 import uuid
 
+import firebase_admin
+from firebase_admin import credentials, messaging
+
 import razorpay
 RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
 RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET")
@@ -75,9 +78,26 @@ OTP_RESEND_INTERVAL_SEC = int(os.environ.get("OTP_RESEND_INTERVAL_SEC", "60"))
 OTP_MAX_VERIFY_ATTEMPTS = int(os.environ.get("OTP_MAX_VERIFY_ATTEMPTS", "5"))
 RESET_TOKEN_EXPIRY_MIN = int(os.environ.get("RESET_TOKEN_EXPIRY_MIN", "10"))
 
-# Emergent Push Notifications
+# Emergent Push Notifications & Firebase Cloud Messaging (FCM)
 EMERGENT_PUSH_BASE_URL = "https://integrations.emergentagent.com"
 EMERGENT_PUSH_KEY = os.environ.get("EMERGENT_PUSH_KEY", "placeholder")
+
+try:
+    fcm_cred_path = os.getenv("FCM_CREDENTIALS_PATH", "firebase-adminsdk.json")
+    full_cred_path = ROOT_DIR / fcm_cred_path if not os.path.isabs(fcm_cred_path) else Path(fcm_cred_path)
+    if full_cred_path.exists():
+        cred = credentials.Certificate(str(full_cred_path))
+        firebase_admin.initialize_app(cred)
+        logger.info("Firebase Admin FCM initialized with credentials from %s", full_cred_path)
+    elif "GOOGLE_APPLICATION_CREDENTIALS" in os.environ or "FIREBASE_CONFIG" in os.environ:
+        firebase_admin.initialize_app()
+        logger.info("Firebase Admin FCM initialized with default credentials.")
+    else:
+        logger.warning("No Firebase credentials found; FCM messaging will log simulated dispatch until credentials are set.")
+except ValueError:
+    pass
+except Exception as e:
+    logger.warning("Failed to initialize Firebase Admin SDK: %s", e)
 
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
@@ -1228,35 +1248,83 @@ async def purge_expired_otps() -> int:
 
 
 # ---------------------------------------------------------------------------
-# Emergent Push helper
+# Firebase Cloud Messaging (FCM) Push helper
 # ---------------------------------------------------------------------------
 async def send_push(
     recipients: List[str],
     data: Dict[str, Any],
     idempotency_key: Optional[str] = None,
 ) -> None:
-    """Fire a push notification via the Emergent relay. Safe to call w/ empty list."""
+    """Dispatch real Firebase Cloud Messaging (FCM) push notification to Android devices."""
     if not recipients:
         return
     if "title" not in data or "message" not in data:
         raise ValueError("push data must include title and message")
-    cli = get_push_client()
-    for i in range(0, len(recipients), 100):
-        chunk = recipients[i:i + 100]
-        payload: Dict[str, Any] = {"recipients": chunk, "data": data}
-        if idempotency_key:
-            payload["$idempotency_key"] = f"{idempotency_key}-{i // 100}"
-        try:
-            resp = await cli.post("/api/v1/push/trigger", json=payload)
-            if resp.status_code == 401:
-                logger.warning(
-                    "EMERGENT_PUSH_KEY missing or invalid (push skipped)")
-                return
-            if resp.status_code >= 400:
-                logger.warning("push trigger %s: %s",
-                               resp.status_code, resp.text[:200])
-        except Exception as e:
-            logger.warning("push trigger failed (non-blocking): %s", e, exc_info=True)
+    
+    # Map user IDs to their FCM tokens
+    token_user_map = []
+    async for u in users_col.find({"id": {"$in": recipients}}):
+        tok = u.get("fcm_token") or u.get("push_token")
+        if tok and isinstance(tok, str) and tok.strip() and "simulator" not in tok.lower():
+            token_user_map.append((u["id"], tok.strip()))
+            
+    if not token_user_map:
+        logger.info("send_push: No valid FCM tokens found for target recipients.")
+        return
+
+    title_val = data.get("title", "MessMate Notification").strip()
+    body_val = data.get("message", "").strip()
+    action_url = str(data.get("action_url", "/notifications"))
+    deeplink = str(data.get("deeplink", "/notifications"))
+    
+    data_payload = {
+        "action_url": action_url,
+        "deeplink": deeplink,
+        "title": title_val,
+        "message": body_val,
+        "subtext": "MessMate",
+        "timestamp": now_iso()
+    }
+    
+    # If Firebase Admin hasn't been initialized with live credentials, simulate and log
+    if not firebase_admin._apps:
+        logger.info("[FCM SIMULATION] Push dispatched to %d tokens | Title: %s | Body: %s", len(token_user_map), title_val, body_val)
+        return
+        
+    messages = []
+    for uid, token in token_user_map:
+        msg = messaging.Message(
+            notification=messaging.Notification(title=title_val, body=body_val),
+            data=data_payload,
+            android=messaging.AndroidConfig(
+                priority="high",
+                notification=messaging.AndroidNotification(
+                    channel_id="default",
+                    default_sound=True,
+                    click_action="FLUTTER_NOTIFICATION_CLICK"
+                )
+            ),
+            token=token
+        )
+        messages.append(msg)
+        
+    try:
+        # Deliver via Firebase Admin messaging SDK
+        response = await asyncio.to_thread(messaging.send_each, messages)
+        logger.info("FCM push dispatched: %d success, %d failure", response.success_count, response.failure_count)
+        
+        # Clean up invalid or outdated FCM tokens immediately
+        for idx, resp in enumerate(response.responses):
+            if not resp.success and resp.exception:
+                err = resp.exception
+                uid, bad_token = token_user_map[idx]
+                logger.warning("FCM delivery failed for user %s: %s", uid, err)
+                if isinstance(err, (messaging.UnregisteredError, messaging.InvalidArgumentError)) or any(x in str(err).lower() for x in ["unregistered", "not-registered", "invalid-registration-token", "invalid_argument"]):
+                    await users_col.update_one({"id": uid}, {"$unset": {"fcm_token": "", "push_token": ""}})
+                    await push_tokens_col.delete_many({"device_token": bad_token})
+                    logger.info("Removed outdated/invalid FCM token for user %s", uid)
+    except Exception as e:
+        logger.warning("send_push FCM batch delivery error: %s", e, exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -2361,18 +2429,19 @@ async def toggle_auto_renew(
 async def save_push_token(
         payload: PushTokenInput,
         u: dict = Depends(get_current_user)):
-    """Capture an Expo/FCM push token. Also registers with the Emergent relay."""
+    """Capture an FCM push device token and store against user account."""
+    clean_token = payload.push_token.strip()
     await users_col.update_one(
         {"id": u["id"]},
-        {"$set": {"push_token": payload.push_token.strip(),
-                  "push_platform": payload.platform,
+        {"$set": {"fcm_token": clean_token,
+                  "push_token": clean_token,
+                  "push_platform": payload.platform or "android",
                   "updated_at": now_iso()}},
     )
-    # Upsert into push_tokens collection (one doc per user/device combo)
     await push_tokens_col.update_one(
-        {"user_id": u["id"], "device_token": payload.push_token.strip()},
+        {"user_id": u["id"], "device_token": clean_token},
         {"$set": {
-            "user_id": u["id"], "device_token": payload.push_token.strip(),
+            "user_id": u["id"], "device_token": clean_token,
             "platform": payload.platform or "android", "hostel": hostel_of(u),
             "role": u["role"], "updated_at": now_iso(),
         }, "$setOnInsert": {"created_at": now_iso()}},
@@ -2385,36 +2454,26 @@ async def save_push_token(
 async def register_push(
         body: RegisterPushBody,
         u: dict = Depends(get_current_user)):
-    """Relay device token registration to the Emergent push provider.
-
-    The auth dep ensures we're tying it to the right user.
-    """
+    """Register device token with FCM and store locally."""
     if body.user_id != u["id"]:
         raise HTTPException(status_code=403, detail="user_id mismatch")
-    # Store locally too
+    clean_token = body.device_token.strip()
+    await users_col.update_one(
+        {"id": u["id"]},
+        {"$set": {"fcm_token": clean_token,
+                  "push_token": clean_token,
+                  "push_platform": body.platform or "android",
+                  "updated_at": now_iso()}},
+    )
     await push_tokens_col.update_one(
-        {"user_id": u["id"], "device_token": body.device_token.strip()},
+        {"user_id": u["id"], "device_token": clean_token},
         {"$set": {
-            "user_id": u["id"], "device_token": body.device_token.strip(),
+            "user_id": u["id"], "device_token": clean_token,
             "platform": body.platform, "hostel": hostel_of(u),
             "role": u["role"], "updated_at": now_iso(),
         }, "$setOnInsert": {"created_at": now_iso()}},
         upsert=True,
     )
-    # Relay
-    cli = get_push_client()
-    try:
-        resp = await cli.post("/api/v1/push/users/register", json={
-            "user_id": body.user_id,
-            "platform": body.platform,
-            "device_token": body.device_token,
-        })
-        if resp.status_code == 401:
-            logger.warning("EMERGENT_PUSH_KEY missing or invalid")
-        elif resp.status_code >= 500:
-            logger.warning("Push provider 5xx: %s", resp.text[:200])
-    except Exception as e:
-        logger.warning("Push register relay failed (non-blocking): %s", e, exc_info=True)
     return {"status": "registered"}
 
 

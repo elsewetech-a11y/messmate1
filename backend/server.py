@@ -754,22 +754,132 @@ async def require_admin(u: dict = Depends(
 
 
 async def get_subscription_status(institution_name: str) -> dict:
-    from datetime import datetime, timezone
+    from datetime import datetime, timedelta
     import math
     sub = await subscriptions_col.find_one({"institution_or_hostel_name": institution_name}, {"_id": 0})
     student_count = await users_col.count_documents({"institution_or_hostel_name": institution_name, "role": "student", "approval_status": "approved"})
 
+    if not sub:
+        return {
+            "institution_or_hostel_name": institution_name,
+            "status": "SUBSCRIPTION_EXPIRED",
+            "is_trial": False,
+            "days_remaining": 0,
+            "student_limit": 0,
+            "registered_students": student_count,
+            "expiry_date": None,
+            "billing_contact": None,
+            "plan_type": None,
+            "auto_renew": False
+        }
+
+    now_dt = datetime.now(IST)
+    current_status = sub.get("status", "SUBSCRIPTION_EXPIRED")
+    is_trial = sub.get("is_trial", False) or current_status in ["TRIAL_ACTIVE", "TRIAL_EXPIRED", "FREE_TRIAL"] or sub.get("plan_type") == "trial"
+    days_remaining = 0
+    expiry_date_str = None
+    
+    if current_status == "ACTIVE" and not sub.get("is_trial", False):
+        sub_end_str = sub.get("subscription_end_date")
+        if sub_end_str:
+            sub_end_dt = datetime.fromisoformat(sub_end_str)
+            if sub_end_dt.tzinfo is None:
+                sub_end_dt = sub_end_dt.replace(tzinfo=IST)
+            if now_dt >= sub_end_dt:
+                current_status = "SUBSCRIPTION_EXPIRED"
+                await subscriptions_col.update_one({"institution_or_hostel_name": institution_name}, {"$set": {"status": current_status}})
+            else:
+                days_remaining = max(1, int(math.ceil((sub_end_dt - now_dt).total_seconds() / 86400.0)))
+                expiry_date_str = sub_end_str
+    elif is_trial:
+        trial_start_str = sub.get("trial_start_date")
+        trial_end_str = sub.get("trial_end_date")
+        
+        trial_start_dt = None
+        trial_end_dt = None
+        
+        if trial_start_str:
+            try:
+                trial_start_dt = datetime.fromisoformat(trial_start_str)
+            except (ValueError, TypeError):
+                trial_start_dt = None
+        if trial_end_str:
+            try:
+                trial_end_dt = datetime.fromisoformat(trial_end_str)
+            except (ValueError, TypeError):
+                trial_end_dt = None
+                
+        needs_healing = False
+        if not trial_start_dt or not trial_end_dt or (trial_end_dt - trial_start_dt).days != 10 or (trial_end_dt - now_dt).days > 10 or sub.get("days_remaining") == 9999:
+            needs_healing = True
+            
+        if needs_healing:
+            admin_user = await users_col.find_one({"institution_or_hostel_name": institution_name, "role": "admin"}, {"created_at": 1, "_id": 0})
+            if admin_user and admin_user.get("created_at"):
+                try:
+                    trial_start_dt = datetime.fromisoformat(admin_user["created_at"])
+                except (ValueError, TypeError):
+                    trial_start_dt = now_dt
+            elif not trial_start_dt:
+                trial_start_dt = now_dt
+                
+            if trial_start_dt.tzinfo is None:
+                trial_start_dt = trial_start_dt.replace(tzinfo=IST)
+                
+            trial_end_dt = trial_start_dt + timedelta(days=10)
+            trial_start_str = trial_start_dt.isoformat()
+            trial_end_str = trial_end_dt.isoformat()
+            
+            update_fields = {
+                "trial_start_date": trial_start_str,
+                "trial_end_date": trial_end_str,
+                "is_trial": True,
+                "student_limit": 999999,
+                "plan_type": "trial"
+            }
+            if now_dt >= trial_end_dt:
+                current_status = "TRIAL_EXPIRED"
+                update_fields["status"] = "TRIAL_EXPIRED"
+            else:
+                current_status = "TRIAL_ACTIVE"
+                update_fields["status"] = "TRIAL_ACTIVE"
+                
+            await subscriptions_col.update_one(
+                {"institution_or_hostel_name": institution_name},
+                {"$set": update_fields, "$unset": {"days_remaining": ""}}
+            )
+            sub.update(update_fields)
+        
+        if trial_end_dt.tzinfo is None:
+            trial_end_dt = trial_end_dt.replace(tzinfo=IST)
+            
+        diff_sec = (trial_end_dt - now_dt).total_seconds()
+        if diff_sec <= 0:
+            current_status = "TRIAL_EXPIRED"
+            days_remaining = 0
+            if sub.get("status") != "TRIAL_EXPIRED":
+                await subscriptions_col.update_one({"institution_or_hostel_name": institution_name}, {"$set": {"status": current_status}})
+        else:
+            current_status = "TRIAL_ACTIVE"
+            days_remaining = int(math.ceil(diff_sec / 86400.0))
+            days_remaining = max(1, min(10, days_remaining))
+            if sub.get("status") != "TRIAL_ACTIVE":
+                await subscriptions_col.update_one({"institution_or_hostel_name": institution_name}, {"$set": {"status": current_status}})
+        expiry_date_str = trial_end_str
+    else:
+        days_remaining = 0
+
     return {
         "institution_or_hostel_name": institution_name,
-        "status": "ACTIVE",
-        "is_trial": False,
-        "days_remaining": 9999,
-        "student_limit": sub["student_limit"] if sub else 5000,
+        "status": current_status,
+        "is_trial": is_trial,
+        "days_remaining": days_remaining,
+        "student_limit": sub.get("student_limit", 250),
         "registered_students": student_count,
-        "expiry_date": None,
-        "billing_contact": sub.get("billing_contact") if sub else None,
-        "plan_type": sub.get("plan_type") if sub else None,
-        "auto_renew": sub.get("auto_renew", False) if sub else False
+        "expiry_date": expiry_date_str,
+        "billing_contact": sub.get("billing_contact"),
+        "plan_type": sub.get("plan_type"),
+        "auto_renew": sub.get("auto_renew", False)
     }
 
 
@@ -1234,27 +1344,6 @@ async def register(payload: RegisterRequest, _=Depends(rate_limit)):
             else:
                 await pending_requests_col.insert_one(user_doc)
         else:
-            if is_first_admin:
-                from datetime import datetime, timedelta
-                now_dt = datetime.now(IST)
-                trial_end = now_dt + timedelta(days=10)
-                sub_doc = {
-                    "institution_or_hostel_name": payload.institution_or_hostel_name.strip(),
-                    "status": "TRIAL_ACTIVE",
-                    "is_trial": True,
-                    "trial_start_date": now_dt.isoformat(),
-                    "trial_end_date": trial_end.isoformat(),
-                    "subscription_start_date": None,
-                    "subscription_end_date": None,
-                    "grace_period_end_date": None,
-                    "plan_type": "trial",
-                    "student_limit": 500,
-                    "auto_renew": False,
-                    "payment_status": "NONE",
-                    "created_at": now,
-                    "updated_at": now,
-                }
-                await subscriptions_col.insert_one(sub_doc)
             await users_col.insert_one(user_doc)
 
     # Throttle: only mint a new OTP if cooldown elapsed
@@ -1342,6 +1431,43 @@ async def verify_email(payload: VerifyEmailRequest):
             {"id": user["id"]},
             {"$set": {"email_verified": True, "updated_at": now}},
         )
+        
+        # Free Trial Creation Logic (Ensure ONLY ONE trial per Admin lifetime)
+        if user["role"] == "admin":
+            inst_name = user.get("institution_or_hostel_name")
+            admin_id = user.get("id")
+            admin_email = user.get("email")
+            sub_count = await subscriptions_col.count_documents({
+                "$or": [
+                    {"institution_or_hostel_name": inst_name},
+                    {"admin_email": admin_email},
+                    {"admin_id": admin_id}
+                ]
+            })
+            if sub_count == 0:
+                from datetime import datetime, timedelta
+                now_dt = datetime.now(IST)
+                trial_end = now_dt + timedelta(days=10)
+                sub_doc = {
+                    "institution_or_hostel_name": inst_name,
+                    "admin_id": admin_id,
+                    "admin_email": admin_email,
+                    "status": "TRIAL_ACTIVE",
+                    "is_trial": True,
+                    "trial_start_date": now_dt.isoformat(),
+                    "trial_end_date": trial_end.isoformat(),
+                    "subscription_start_date": None,
+                    "subscription_end_date": None,
+                    "grace_period_end_date": None,
+                    "plan_type": "trial",
+                    "student_limit": 999999, # Unlimited approvals during trial
+                    "auto_renew": False,
+                    "payment_status": "NONE",
+                    "created_at": now,
+                    "updated_at": now,
+                }
+                await subscriptions_col.insert_one(sub_doc)
+
         sid = await rotate_session(user["id"])
         token = create_token({"sub": user["id"],
                               "sid": sid,
@@ -1660,7 +1786,45 @@ async def create_subscription_order(
         payload: OrderCreateRequest,
         u: dict = Depends(require_admin)):
     try:
-        amount_in_inr = payload.student_count * 3.0 if payload.plan_type == "monthly" else payload.student_count * 2.50 * 12
+        inst_name = u["institution_or_hostel_name"]
+        
+        # Determine actual approved students
+        approved_count = await users_col.count_documents({
+            "institution_or_hostel_name": inst_name,
+            "role": "student",
+            "approval_status": "approved"
+        })
+        
+        sub_status = await get_subscription_status(inst_name)
+        is_active = sub_status["status"] == "ACTIVE"
+        
+        if is_active:
+            # Upgrade flow
+            current_limit = sub_status["student_limit"]
+            current_plan = sub_status["plan_type"]
+            
+            if payload.plan_type != current_plan:
+                raise HTTPException(status_code=400, detail="Cannot change plan type during an upgrade.")
+                
+            min_students = current_limit + 250
+            if payload.student_count < min_students:
+                raise HTTPException(status_code=400, detail=f"Upgrade requires at least 250 additional students (Minimum: {min_students}).")
+                
+            additional_students = payload.student_count - current_limit
+            amount_in_inr = additional_students * 3.0 if payload.plan_type == "monthly" else additional_students * 2.50 * 12
+            action = "CAPACITY_UPGRADE"
+            is_upgrade_flag = True
+        else:
+            # New or Renewal flow
+            min_students = max(approved_count, 250)
+            if payload.student_count < min_students:
+                raise HTTPException(status_code=400, detail=f"Student count must be at least {min_students} based on approved students.")
+                
+            amount_in_inr = payload.student_count * 3.0 if payload.plan_type == "monthly" else payload.student_count * 2.50 * 12
+            action = "SUBSCRIPTION_PURCHASE"
+            is_upgrade_flag = False
+            additional_students = 0
+
         amount_in_paise = int(amount_in_inr * 100)
         
         if razorpay_client:
@@ -1675,7 +1839,7 @@ async def create_subscription_order(
 
         doc = {
             "id": str(uuid.uuid4()),
-            "institution_or_hostel_name": u["institution_or_hostel_name"],
+            "institution_or_hostel_name": inst_name,
             "admin_id": u.get("id"),
             "order_id": order_id,
             "payment_id": None,
@@ -1686,12 +1850,15 @@ async def create_subscription_order(
             "transaction_date": None,
             "plan_type": payload.plan_type,
             "student_count": payload.student_count,
-            "action": "SUBSCRIPTION_PURCHASE",
+            "action": action,
+            "is_upgrade": is_upgrade_flag,
+            "additional_students": additional_students,
             "created_at": now_iso()
         }
         await transactions_col.insert_one(doc)
-        # Note: Frontend needs order_id (from razorpay) and amount for checkout
         return {"order_id": order_id, "amount": amount_in_inr, "currency": "INR"}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error in create_subscription_order: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal Server Error")
@@ -1737,6 +1904,19 @@ async def verify_payment(
                 "transaction_date": transaction_date
             }}
         )
+
+        # Enforce approved student minimum count
+        approved_count = await users_col.count_documents({
+            "institution_or_hostel_name": u["institution_or_hostel_name"],
+            "role": "student",
+            "approval_status": "approved"
+        })
+        min_required = max(approved_count, 250)
+        if order.get("student_count", 0) < min_required and not order.get("is_upgrade", False):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot activate subscription: student count ({order['student_count']}) is below current approved student minimum ({min_required})."
+            )
 
         # Get current sub to compute dates properly
         sub = await subscriptions_col.find_one({"institution_or_hostel_name": u["institution_or_hostel_name"]})
@@ -2605,10 +2785,19 @@ async def clear_admin_notifs(u: dict = Depends(require_active_subscription_admin
 # --- STUDENT NOTIFICATIONS ---
 @api.get("/student/notifications")
 async def student_notifications(u: dict = Depends(require_approved_student)):
+    try:
+        await _dispatch_scheduled_notifications()
+    except Exception as e:
+        logger.warning("Error dispatching scheduled notifications: %s", e)
+        
+    query = {"recipient_id": u["id"]}
+    if u.get("admin_id"):
+        query["$or"] = [{"sender_id": u["admin_id"]}, {"sender_id": {"$exists": False}}, {"sender_id": None}]
+        
     items = []
     cursor = student_notifications_col.find(
-        {"recipient_id": u["id"]}, {"_id": 0}
-    ).sort("created_at", -1).limit(50)
+        query, {"_id": 0}
+    ).sort("created_at", -1).limit(1000)
     async for d in cursor:
         items.append(d)
     unread = sum(1 for i in items if not i.get("read_status"))
@@ -2881,19 +3070,14 @@ async def admin_approve(sid: str, u: dict = Depends(
     is_trial = sub_status.get("is_trial", False) and sub_status.get(
         "status") == "TRIAL_ACTIVE"
 
-    status_to_set = "approved"
     if not is_trial and current >= limit:
-        status_to_set = "pending_capacity"
+        raise HTTPException(
+            status_code=400,
+            detail="You have reached your subscribed student approval limit. Please upgrade your subscription to approve additional students."
+        )
 
     pending = await pending_requests_col.find_one({"id": sid, "institution_or_hostel_name": h})
     if pending:
-        if status_to_set == "pending_capacity":
-            # Just update the status in pending_requests
-            await pending_requests_col.update_one({"id": sid}, {"$set": {"approval_status": "pending_capacity", "updated_at": now_iso()}})
-            return {
-                "ok": True,
-                "status": "pending_capacity",
-                "message": "You have reached your subscribed student limit. Please upgrade your subscription to add more students."}
 
         pending["approval_status"] = "approved"
         pending["updated_at"] = now_iso()
@@ -3779,13 +3963,13 @@ async def _dispatch_scheduled_notifications() -> int:
             h = doc["hostel"]
             admin_id_val = doc.get("adminId")
             recipients = []
+            user_query = {"role": "student", "approval_status": "approved"}
             if admin_id_val:
-                async for user in users_col.find({
-                    "role": "student",
-                    "approval_status": "approved",
-                    "$or": [{"admin_id": admin_id_val}, {"institution_or_hostel_name": h}]
-                }):
-                    recipients.append(user["id"])
+                user_query["$or"] = [{"admin_id": admin_id_val}, {"institution_or_hostel_name": h}]
+            else:
+                user_query["institution_or_hostel_name"] = h
+            async for user in users_col.find(user_query):
+                recipients.append(user["id"])
             
             if recipients:
                 docs = []

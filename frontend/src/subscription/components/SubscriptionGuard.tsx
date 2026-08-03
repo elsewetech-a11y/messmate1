@@ -1,5 +1,6 @@
-import React from "react";
+import React, { useEffect } from "react";
 import { View, ActivityIndicator } from "react-native";
+import { useRouter } from "expo-router";
 import { useSubscription } from "../hooks/useSubscription";
 import { SubscriptionLockScreen } from "../screens/SubscriptionLockScreen";
 import { useTheme } from "@/src/theme";
@@ -12,6 +13,13 @@ type SubscriptionGuardProps = {
 export function SubscriptionGuard({ children, role }: SubscriptionGuardProps) {
   const { loading, canAccessFeatures, subscription, renew } = useSubscription();
   const { c } = useTheme();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (!loading && subscription && !canAccessFeatures && role === "admin") {
+      router.replace("/(admin)/subscription" as any);
+    }
+  }, [loading, subscription, canAccessFeatures, role, router]);
 
   if (loading && !subscription) {
     return (
@@ -22,6 +30,13 @@ export function SubscriptionGuard({ children, role }: SubscriptionGuardProps) {
   }
 
   if (!canAccessFeatures) {
+    if (role === "admin") {
+      return (
+        <View style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: c.bg }}>
+          <ActivityIndicator size="large" color={c.primary} />
+        </View>
+      );
+    }
     return (
       <SubscriptionLockScreen 
         role={role} 
@@ -35,3 +50,4 @@ export function SubscriptionGuard({ children, role }: SubscriptionGuardProps) {
 
   return <>{children}</>;
 }
+

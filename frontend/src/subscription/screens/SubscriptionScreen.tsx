@@ -24,6 +24,14 @@ export function SubscriptionScreen() {
 
   const { subscription, loading: subLoading, refreshStatus } = useSubscription();
 
+  // Current status derived info (Must be initialized before use in calculator)
+  const currentStatus = subscription?.status;
+  const isActive = currentStatus === "ACTIVE" || currentStatus === "TRIAL_ACTIVE";
+  const isExpired = currentStatus === "SUBSCRIPTION_EXPIRED" || currentStatus === "TRIAL_EXPIRED";
+  const isTrial = subscription?.is_trial;
+  const isUpgrade = currentStatus === "ACTIVE";
+  const currentLimit = subscription?.student_limit || 0;
+
   const dynamicMinStudents = useMemo(() => {
     return Math.max(PRICING_CONFIG.MIN_STUDENTS, subscription?.registered_students || 0);
   }, [subscription?.registered_students]);
@@ -40,7 +48,8 @@ export function SubscriptionScreen() {
     pricePerStudent,
     subscriptionDuration,
     subscriptionLabel,
-  } = useSubscriptionCalculator(500, dynamicMinStudents);
+    effectiveMin
+  } = useSubscriptionCalculator(isUpgrade ? currentLimit + 250 : dynamicMinStudents, dynamicMinStudents, isUpgrade, currentLimit);
 
   const [paymentLoading, setPaymentLoading] = useState(false);
   const [paymentSuccess, setPaymentSuccess] = useState(false);
@@ -50,17 +59,16 @@ export function SubscriptionScreen() {
 
   useEffect(() => {
     if (subscription && !initialized) {
-      const initialCount = Math.max(subscription.registered_students, PRICING_CONFIG.MIN_STUDENTS);
-      handleStudentChange(initialCount);
+      if (isUpgrade) {
+         setBillingCycle((subscription.plan_type as "monthly" | "yearly") || "monthly");
+         handleStudentChange(currentLimit + 250);
+      } else {
+         const initialCount = Math.max(subscription.registered_students || 0, PRICING_CONFIG.MIN_STUDENTS);
+         handleStudentChange(initialCount);
+      }
       setInitialized(true);
     }
-  }, [subscription, initialized, handleStudentChange]);
-
-  // Current status derived info
-  const currentStatus = subscription?.status;
-  const isActive = currentStatus === "ACTIVE" || currentStatus === "TRIAL_ACTIVE";
-  const isExpired = currentStatus === "SUBSCRIPTION_EXPIRED" || currentStatus === "TRIAL_EXPIRED";
-  const isTrial = subscription?.is_trial;
+  }, [subscription, initialized, handleStudentChange, isUpgrade, currentLimit, setBillingCycle]);
 
   const handlePayNow = async () => {
     if (!token || !user || !isValid) return;
@@ -178,11 +186,12 @@ export function SubscriptionScreen() {
       >
         {/* ─── Header ─────────────────────────── */}
         <View style={styles.header}>
-          <Text style={styles.eyebrow}>SUBSCRIPTION</Text>
-          <Text style={styles.title}>Manage Plan</Text>
+          <Text style={styles.eyebrow}>{isUpgrade ? "UPGRADE CAPACITY" : "SUBSCRIPTION"}</Text>
+          <Text style={styles.title}>{isUpgrade ? "Upgrade Plan" : "Manage Plan"}</Text>
           <Text style={styles.subtitle}>
-            Subscriptions are calculated based on the number of students connected
-            to your institution. Choose a Monthly or Yearly plan below.
+            {isUpgrade 
+              ? "Purchase additional student capacity for your institution. Additional students are billed at your current plan's rate."
+              : "Subscriptions are calculated based on the number of students connected to your institution. Choose a Monthly or Yearly plan below."}
           </Text>
         </View>
 
@@ -232,20 +241,22 @@ export function SubscriptionScreen() {
         )}
 
         {/* ─── Plan Selector ─────────────────── */}
-        <PlanSelector
-          selectedPlan={billingCycle}
-          onSelectPlan={setBillingCycle}
-        />
-
-        {/* ─── Student Slider + Input ────────── */}
-        <StudentSlider
-          students={students}
-          minStudents={dynamicMinStudents}
-          onSliderChange={handleSliderChange}
-          onInputChange={handleStudentChange}
-          onInputBlur={handleInputBlur}
-          billingCycle={billingCycle}
-        />
+        {/* ─── Plan Configuration ─────────────── */}
+        <View style={styles.configurationSection}>
+          <PlanSelector 
+            selectedPlan={billingCycle} 
+            onSelectPlan={setBillingCycle} 
+            disabled={isUpgrade}
+          />
+          <StudentSlider
+            students={students}
+            minStudents={effectiveMin}
+            onSliderChange={handleSliderChange}
+            onInputChange={handleStudentChange}
+            onInputBlur={handleInputBlur}
+            billingCycle={billingCycle}
+          />
+        </View>
 
         {/* ─── Subscription Summary ──────────── */}
         <PriceSummary
@@ -498,6 +509,9 @@ const makeStyles = (c: ThemeColors) =>
     },
 
     // ─── Loading State ────────
+    configurationSection: {
+      marginVertical: spacing.sm,
+    },
     loadingContainer: {
       flex: 1,
       justifyContent: "center",

@@ -41,13 +41,7 @@ export function NotifBell({ testID = "notif-bell" }: { testID?: string }) {
     if (user?.role === "admin") {
       router.push("/(admin)/notifications" as any);
     } else {
-      // For student: navigate to the standalone /notifications page.
-      // On web, use window.location to avoid expo-router resolving within tab groups.
-      if (Platform.OS === "web" && typeof window !== "undefined") {
-        window.location.href = "/notifications";
-      } else {
-        router.push("/notifications" as any);
-      }
+      router.push("/notifications" as any);
     }
   };
 

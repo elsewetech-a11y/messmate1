@@ -3,7 +3,7 @@
 
 import { Feather } from "@expo/vector-icons";
 import { useLocalSearchParams } from "expo-router";
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -21,7 +21,6 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { api, type CustomQuestion, type MealPlan, type MealType, type TodayResponse } from "@/src/api/client";
 import { useAuth } from "@/src/auth/AuthContext";
 import { BarChart as _unused } from "@/src/components/BarChart"; // eslint-disable-line @typescript-eslint/no-unused-vars
-import { Button } from "@/src/components/Button";
 import { Chip } from "@/src/components/Chip";
 import { NotifBell } from "@/src/components/NotifBell";
 import { Toast } from "@/src/components/Toast";
@@ -71,9 +70,13 @@ export default function StudentHome() {
   const [feedback, setFeedback] = useState("");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [saving, setSaving] = useState(false);
   const [submittingFeedback, setSubmittingFeedback] = useState(false);
   const [toast, setToast] = useState<ToastState>(null);
+
+  const lastSyncedSnapshotRef = useRef<string>("");
+  const latestSnapshotRef = useRef<string>("");
+  const isSavingRef = useRef<boolean>(false);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const dateLabel = useMemo(() => {
     if (!data?.date) return "";
@@ -107,6 +110,15 @@ export default function StudentHome() {
       setBreakfast(b);
       setLunch(l);
       setDinner(d);
+
+      const snapshot = JSON.stringify({
+        date: todayRes.date || null,
+        breakfast: b,
+        lunch: l,
+        dinner: d,
+      });
+      lastSyncedSnapshotRef.current = snapshot;
+      latestSnapshotRef.current = snapshot;
 
       // Pre-fill "Other" inputs if previously saved as "Other: ..."
       const parseOther = (mp: MealPlan): string =>
@@ -185,26 +197,62 @@ export default function StudentHome() {
     setFor(m)((prev) => ({ ...prev, custom_answer: opt }));
   };
 
-  const onSave = async () => {
-    if (!token) return;
-    setSaving(true);
+  const currentSnapshot = useMemo(() => {
+    return JSON.stringify({
+      date: data?.date || null,
+      breakfast,
+      lunch,
+      dinner,
+    });
+  }, [data?.date, breakfast, lunch, dinner]);
+
+  useEffect(() => {
+    latestSnapshotRef.current = currentSnapshot;
+  }, [currentSnapshot]);
+
+  const runSyncQueue = useCallback(async () => {
+    if (!token || loading || !data || isSavingRef.current) return;
+    if (latestSnapshotRef.current === lastSyncedSnapshotRef.current) return;
+
+    isSavingRef.current = true;
+    const snapshotToSave = latestSnapshotRef.current;
+    const payload = JSON.parse(snapshotToSave);
+
     try {
-      await api.upsertToday(token, {
-        date: data?.date || null,
-        breakfast,
-        lunch,
-        dinner,
-      });
-      setToast({
-        message: `${forDay === "today" ? "Today's" : "Tomorrow's"} plan saved`,
-        variant: "success",
-      });
+      await api.upsertToday(token, payload);
+      lastSyncedSnapshotRef.current = snapshotToSave;
     } catch (e: any) {
-      setToast({ message: e?.message || "Save failed", variant: "error" });
+      // Network or server failure: keep student's latest selection visible & retry automatically
+      if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = setTimeout(() => {
+        isSavingRef.current = false;
+        runSyncQueue();
+      }, 3000);
+      return;
     } finally {
-      setSaving(false);
+      isSavingRef.current = false;
     }
-  };
+
+    if (latestSnapshotRef.current !== lastSyncedSnapshotRef.current) {
+      runSyncQueue();
+    }
+  }, [token, loading, data]);
+
+  useEffect(() => {
+    if (loading || !data || !lastSyncedSnapshotRef.current) return;
+    if (currentSnapshot !== lastSyncedSnapshotRef.current) {
+      const timer = setTimeout(() => {
+        runSyncQueue();
+      }, 350);
+      return () => clearTimeout(timer);
+    }
+  }, [loading, data, currentSnapshot, runSyncQueue]);
+
+  useEffect(() => {
+    return () => {
+      if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+    };
+  }, []);
 
   const onSendFeedback = async () => {
     if (!token) return;
@@ -438,20 +486,6 @@ export default function StudentHome() {
               {renderMeal("breakfast", menu.breakfast_items, menu.breakfast_custom_question)}
               {renderMeal("lunch", menu.lunch_items, menu.lunch_custom_question)}
               {renderMeal("dinner", menu.dinner_items, menu.dinner_custom_question)}
-
-              <Button
-                testID="home-save-plan"
-                label={
-                  saving
-                    ? "Saving..."
-                    : forDay === "today"
-                      ? "Save today's plan"
-                      : "Save tomorrow's plan"
-                }
-                onPress={onSave}
-                loading={saving}
-                style={{ marginTop: spacing.md }}
-              />
             </>
           ) : null}
 

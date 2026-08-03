@@ -13,13 +13,15 @@ if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental
 type PlanSelectorProps = {
   selectedPlan: BillingCycle;
   onSelectPlan: (plan: BillingCycle) => void;
+  disabled?: boolean;
 };
 
-export function PlanSelector({ selectedPlan, onSelectPlan }: PlanSelectorProps) {
+export function PlanSelector({ selectedPlan, onSelectPlan, disabled = false }: PlanSelectorProps) {
   const { c } = useTheme();
   const styles = useMemo(() => makeStyles(c), [c]);
 
   const handleSelect = (plan: BillingCycle) => {
+    if (disabled) return;
     if (plan !== selectedPlan) {
       LayoutAnimation.configureNext(
         LayoutAnimation.create(200, LayoutAnimation.Types.easeInEaseOut, LayoutAnimation.Properties.opacity)
@@ -29,10 +31,12 @@ export function PlanSelector({ selectedPlan, onSelectPlan }: PlanSelectorProps) 
   };
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, disabled && { opacity: 0.6 }]}>
       <Text style={styles.sectionTitle}>Select Plan</Text>
       <Text style={styles.sectionSubtitle}>
-        Choose between monthly or yearly billing.
+        {disabled 
+          ? "You must maintain your current plan type during an upgrade."
+          : "Choose between monthly or yearly billing."}
       </Text>
       <View style={styles.row}>
         {/* Monthly Plan */}
@@ -43,7 +47,7 @@ export function PlanSelector({ selectedPlan, onSelectPlan }: PlanSelectorProps) 
             selectedPlan === "monthly" && styles.cardActive
           ]}
           onPress={() => handleSelect("monthly")}
-          activeOpacity={0.8}
+          activeOpacity={disabled ? 1 : 0.8}
         >
           {selectedPlan === "monthly" && (
             <View style={styles.checkIcon}>
@@ -64,7 +68,7 @@ export function PlanSelector({ selectedPlan, onSelectPlan }: PlanSelectorProps) 
             selectedPlan === "yearly" && styles.cardActive
           ]}
           onPress={() => handleSelect("yearly")}
-          activeOpacity={0.8}
+          activeOpacity={disabled ? 1 : 0.8}
         >
           {selectedPlan === "yearly" && (
             <View style={styles.checkIcon}>

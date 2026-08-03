@@ -1,13 +1,18 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import { PRICING_CONFIG, calculateMonthlyPrice, calculateYearlyPrice } from "../constants/pricingConfig";
 
 export type BillingCycle = "monthly" | "yearly";
 
 export function useSubscriptionCalculator(
   initialStudents: number = PRICING_CONFIG.MIN_STUDENTS,
-  minStudents: number = PRICING_CONFIG.MIN_STUDENTS
+  minStudents: number = PRICING_CONFIG.MIN_STUDENTS,
+  isUpgrade: boolean = false,
+  currentLimit: number = 0
 ) {
-  const [students, setStudents] = useState(Math.max(initialStudents, minStudents));
+  // During an upgrade, the minimum is currentLimit + PRICING_CONFIG.MIN_STUDENTS
+  const effectiveMin = isUpgrade ? currentLimit + PRICING_CONFIG.MIN_STUDENTS : minStudents;
+  
+  const [students, setStudents] = useState(Math.max(initialStudents, effectiveMin));
   const [billingCycle, setBillingCycle] = useState<BillingCycle>("monthly");
 
   const handleStudentChange = useCallback((value: number) => {
@@ -17,22 +22,24 @@ export function useSubscriptionCalculator(
   }, []);
 
   const handleSliderChange = useCallback((value: number) => {
-    setStudents(Math.max(minStudents, Math.min(PRICING_CONFIG.MAX_STUDENTS, value)));
-  }, [minStudents]);
+    setStudents(Math.max(effectiveMin, Math.min(PRICING_CONFIG.MAX_STUDENTS, value)));
+  }, [effectiveMin]);
 
   const handleInputBlur = useCallback(() => {
-    if (students < minStudents) {
-      setStudents(minStudents);
+    if (students < effectiveMin) {
+      setStudents(effectiveMin);
     } else if (students > PRICING_CONFIG.MAX_STUDENTS) {
       setStudents(PRICING_CONFIG.MAX_STUDENTS);
     }
-  }, [students, minStudents]);
+  }, [students, effectiveMin]);
+
+  const billedStudents = isUpgrade ? Math.max(0, students - currentLimit) : students;
 
   const totalPrice = billingCycle === "monthly" 
-    ? calculateMonthlyPrice(students) 
-    : calculateYearlyPrice(students);
+    ? calculateMonthlyPrice(billedStudents) 
+    : calculateYearlyPrice(billedStudents);
 
-  const isValid = students >= minStudents && students <= PRICING_CONFIG.MAX_STUDENTS;
+  const isValid = students >= effectiveMin && students <= PRICING_CONFIG.MAX_STUDENTS;
 
   const pricePerStudent = billingCycle === "monthly"
     ? PRICING_CONFIG.MONTHLY_PRICE
@@ -54,5 +61,6 @@ export function useSubscriptionCalculator(
     pricePerStudent,
     subscriptionDuration,
     subscriptionLabel,
+    effectiveMin
   };
 }

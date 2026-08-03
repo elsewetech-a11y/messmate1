@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useMemo } from "react";
-import { StyleSheet, View, Text, SafeAreaView, FlatList, ActivityIndicator, TouchableOpacity, ScrollView, TextInput, KeyboardAvoidingView, Platform, Alert } from "react-native";
+import { StyleSheet, View, Text, SafeAreaView, FlatList, ActivityIndicator, TouchableOpacity, ScrollView, TextInput, KeyboardAvoidingView, Platform, Alert, StatusBar } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
 import { Feather } from "@expo/vector-icons";
 import DateTimePicker from "@react-native-community/datetimepicker";
@@ -569,6 +569,7 @@ const makeStyles = (c: any) => StyleSheet.create({
   safe: {
     flex: 1,
     backgroundColor: c.bg,
+    paddingTop: Platform.OS === "android" ? (StatusBar.currentHeight || 32) + 16 : 16,
   },
   header: {
     flexDirection: "row",

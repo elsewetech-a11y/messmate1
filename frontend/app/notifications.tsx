@@ -10,6 +10,8 @@ import {
   Alert,
   Modal,
   ScrollView,
+  Platform,
+  StatusBar,
 } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
 import { Feather } from "@expo/vector-icons";
@@ -159,8 +161,8 @@ export default function StudentNotificationsScreen() {
             hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
             style={styles.deleteBtn}
           >
-            <Feather name="trash-2" size={15} color={c.textTertiary} />
-            <Text style={{ fontSize: 12, color: c.textTertiary, marginLeft: 4 }}>Delete</Text>
+            <Feather name="trash-2" size={16} color={c.danger || "#e53935"} />
+            <Text style={{ fontSize: 13, fontWeight: "600", color: c.danger || "#e53935", marginLeft: 5 }}>Delete</Text>
           </TouchableOpacity>
         </View>
       </TouchableOpacity>
@@ -289,6 +291,7 @@ const makeStyles = (c: any) =>
     safe: {
       flex: 1,
       backgroundColor: c.bg,
+      paddingTop: Platform.OS === "android" ? (StatusBar.currentHeight || 32) + 16 : 16,
     },
     header: {
       flexDirection: "row",
@@ -360,10 +363,11 @@ const makeStyles = (c: any) =>
       paddingRight: spacing.xs,
     },
     rightActions: {
+      justifyContent: "center",
       alignItems: "center",
-      gap: 8,
-      paddingLeft: 4,
-      paddingTop: 2,
+      gap: 6,
+      paddingLeft: 6,
+      alignSelf: "center",
     },
     title: {
       fontSize: 15,
@@ -392,7 +396,11 @@ const makeStyles = (c: any) =>
       backgroundColor: c.primary,
     },
     deleteBtn: {
-      padding: 4,
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      paddingVertical: 6,
+      paddingHorizontal: 8,
     },
     empty: {
       alignItems: "center",

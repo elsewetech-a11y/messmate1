@@ -8,6 +8,8 @@ import {
   ActivityIndicator,
   TouchableOpacity,
   Alert,
+  Modal,
+  ScrollView,
 } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
 import { Feather } from "@expo/vector-icons";
@@ -39,6 +41,7 @@ export default function StudentNotificationsScreen() {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<"All" | "Unread">("All");
   const [toast, setToast] = useState<{ message: string; variant: "success" | "error" | "info" } | null>(null);
+  const [selectedNotif, setSelectedNotif] = useState<StudentNotification | null>(null);
 
   const fetchNotifications = useCallback(async () => {
     if (!token) return;
@@ -60,6 +63,7 @@ export default function StudentNotificationsScreen() {
   );
 
   const handleNotificationPress = async (notification: StudentNotification) => {
+    setSelectedNotif(notification);
     if (!notification.read_status && token) {
       setNotifications((prev) =>
         prev.map((n) => (n.id === notification.id ? { ...n, read_status: true } : n))
@@ -213,6 +217,66 @@ export default function StudentNotificationsScreen() {
         />
       )}
 
+      {/* Miniature dialog popup for complete notification reading */}
+      <Modal
+        visible={!!selectedNotif}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSelectedNotif(null)}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setSelectedNotif(null)}
+        >
+          <TouchableOpacity
+            style={styles.modalCard}
+            activeOpacity={1}
+            onPress={() => {}}
+          >
+            <View style={styles.modalHeader}>
+              <View style={styles.modalIconBox}>
+                <Feather name="bell" size={20} color={c.primary} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.modalTitle} numberOfLines={2}>
+                  {selectedNotif?.title || "Hostel Admin Notice"}
+                </Text>
+                <Text style={styles.modalSubtitle}>
+                  Sender: Hostel Admin
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => setSelectedNotif(null)}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <Feather name="x" size={22} color={c.textSecondary} />
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.modalDivider} />
+
+            <ScrollView style={styles.modalScrollView}>
+              <Text style={styles.modalMessage}>
+                {selectedNotif?.message}
+              </Text>
+            </ScrollView>
+
+            <View style={styles.modalFooter}>
+              <Text style={styles.modalTimestamp}>
+                {selectedNotif ? `${getDayLabel(selectedNotif) ? `${getDayLabel(selectedNotif)}, ` : ""}${selectedNotif.date}  •  ${selectedNotif.time}` : ""}
+              </Text>
+              <TouchableOpacity
+                style={styles.modalCloseButton}
+                onPress={() => setSelectedNotif(null)}
+              >
+                <Text style={styles.modalCloseButtonText}>Close</Text>
+              </TouchableOpacity>
+            </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+
       {toast && (
         <Toast message={toast.message} variant={toast.variant} onHide={() => setToast(null)} />
       )}
@@ -339,6 +403,89 @@ const makeStyles = (c: any) =>
       marginTop: spacing.md,
       color: c.textTertiary,
       fontSize: 16,
+    },
+    modalOverlay: {
+      flex: 1,
+      backgroundColor: "rgba(0, 0, 0, 0.6)",
+      justifyContent: "center",
+      alignItems: "center",
+      padding: spacing.lg,
+    },
+    modalCard: {
+      width: "92%",
+      maxHeight: "82%",
+      backgroundColor: c.card,
+      borderRadius: radius.lg,
+      padding: spacing.lg,
+      shadowColor: "#000",
+      shadowOffset: { width: 0, height: 6 },
+      shadowOpacity: 0.25,
+      shadowRadius: 12,
+      elevation: 8,
+    },
+    modalHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      marginBottom: spacing.md,
+      gap: spacing.sm,
+    },
+    modalIconBox: {
+      width: 40,
+      height: 40,
+      borderRadius: radius.md,
+      backgroundColor: c.inputBg,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    modalTitle: {
+      fontSize: 17,
+      fontWeight: "700",
+      color: c.textPrimary,
+    },
+    modalSubtitle: {
+      fontSize: 13,
+      color: c.textTertiary,
+      marginTop: 2,
+    },
+    modalDivider: {
+      height: 1,
+      backgroundColor: c.border,
+      marginBottom: spacing.md,
+    },
+    modalScrollView: {
+      flexGrow: 0,
+    },
+    modalMessage: {
+      fontSize: 15,
+      lineHeight: 24,
+      color: c.textPrimary,
+      marginBottom: spacing.md,
+    },
+    modalFooter: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      marginTop: spacing.sm,
+      paddingTop: spacing.sm,
+      borderTopWidth: 1,
+      borderTopColor: c.border,
+    },
+    modalTimestamp: {
+      fontSize: 12,
+      color: c.textTertiary,
+      flex: 1,
+      marginRight: spacing.sm,
+    },
+    modalCloseButton: {
+      backgroundColor: c.primary,
+      paddingVertical: 8,
+      paddingHorizontal: 16,
+      borderRadius: radius.md,
+    },
+    modalCloseButtonText: {
+      color: "#fff",
+      fontSize: 14,
+      fontWeight: "600",
     },
   });
 

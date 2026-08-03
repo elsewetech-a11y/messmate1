@@ -335,7 +335,7 @@ export default function StudentSettings() {
             icon="bell"
             label="Notifications"
             testID="student-row-notifications"
-            disabledNote={true}
+            onPress={() => setShowNotifModal(true)}
           />
           <View style={styles.divider} />
           <SettingsRow

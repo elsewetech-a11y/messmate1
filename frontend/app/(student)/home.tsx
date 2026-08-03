@@ -166,11 +166,18 @@ export default function StudentHome() {
     const set = setFor(m);
     set((prev) => {
       const has = prev.selected_items.includes(item);
+      const nextItems = has
+        ? prev.selected_items.filter((x) => x !== item)
+        : [...prev.selected_items, item];
+      
+      // Automatically set ON state if a dish is selected
+      const shouldTurnOn = !has && prev.status !== "ON";
+
       return {
         ...prev,
-        selected_items: has
-          ? prev.selected_items.filter((x) => x !== item)
-          : [...prev.selected_items, item],
+        selected_items: nextItems,
+        status: shouldTurnOn ? "ON" : prev.status,
+        reason_if_off: shouldTurnOn ? null : prev.reason_if_off,
       };
     });
   };

@@ -4,6 +4,11 @@ Multi-tenant: every domain doc is scoped by `hostel` (institution_or_hostel_name
 Two-step login with mocked OTP. In-app notifications + push token capture.
 """
 
+import socket
+# MongoDB Atlas Free Tier drops IPv6. Force IPv4 for pymongo and all networking:
+_old_getaddrinfo = socket.getaddrinfo
+socket.getaddrinfo = lambda *args, **kwargs: [r for r in _old_getaddrinfo(*args, **kwargs) if r[0] == socket.AF_INET]
+
 from security import rate_limit
 from email.utils import formataddr as _formataddr
 from email.message import EmailMessage as _EmailMessage
@@ -30,7 +35,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -156,6 +161,27 @@ app.add_middleware(
 )
 
 api = APIRouter(prefix="/api")
+
+from ws_manager import manager as ws_manager
+
+@app.websocket("/api/ws")
+async def websocket_endpoint(websocket: WebSocket, token: str = Query(None)):
+    if not token:
+        await websocket.close(code=1008)
+        return
+    try:
+        user = await get_current_user(token)
+        uid = str(user["_id"])
+        role = user.get("role")
+        inst = user.get("institution_or_hostel_name", "")
+        await ws_manager.connect(websocket, uid, role, inst)
+        while True:
+            # We don't expect messages from client, but keep the connection open
+            data = await websocket.receive_text()
+    except Exception as e:
+        pass
+    finally:
+        ws_manager.disconnect(websocket)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -1300,8 +1326,7 @@ async def send_push(
                 priority="high",
                 notification=messaging.AndroidNotification(
                     channel_id="default",
-                    default_sound=True,
-                    click_action="FLUTTER_NOTIFICATION_CLICK"
+                    default_sound=True
                 )
             ),
             token=token
@@ -2590,6 +2615,7 @@ async def upsert_today_plan(
     saved = await daily_plans_col.find_one(
         {"student_id": u["id"], "date": target}, {"_id": 0}
     )
+    asyncio.create_task(ws_manager.broadcast_to_role(hostel_of(u), "admin", {"type": "student_action"}))
     return {"ok": True, "plan": project_plan(saved)}
 
 
@@ -2605,6 +2631,7 @@ async def post_feedback(
         "feedback_text": payload.feedback_text.strip(),
         "anonymous": True, "created_at": now,
     })
+    asyncio.create_task(ws_manager.broadcast_to_role(hostel_of(u), "admin", {"type": "student_action"}))
     return {"ok": True, "created_at": now}
 
 
@@ -3149,6 +3176,8 @@ async def admin_approve(sid: str, u: dict = Depends(
         
         import asyncio
         asyncio.create_task(log_activity(None, u["id"], u["role"], h, "ADMIN_APPROVED_STUDENT", f"Student ID: {sid}"))
+        asyncio.create_task(ws_manager.broadcast_to_user(sid, {"type": "account_status_changed"}))
+        asyncio.create_task(ws_manager.broadcast_to_role(h, "admin", {"type": "admin_action"}))
         return {"ok": True, "status": "approved"}
 
     # If it's already in users_col (e.g., previously pending or rejected)
@@ -3168,6 +3197,8 @@ async def admin_approve(sid: str, u: dict = Depends(
 
     import asyncio
     asyncio.create_task(log_activity(None, u["id"], u["role"], h, "ADMIN_APPROVED_STUDENT", f"Student ID: {sid}"))
+    asyncio.create_task(ws_manager.broadcast_to_user(sid, {"type": "account_status_changed"}))
+    asyncio.create_task(ws_manager.broadcast_to_role(h, "admin", {"type": "admin_action"}))
     return {"ok": True, "status": "approved", "message": "Approved"}
 
 
@@ -3181,6 +3212,8 @@ async def admin_reject(sid: str, u: dict = Depends(
         await pending_requests_col.delete_one({"id": sid})
         import asyncio
         asyncio.create_task(log_activity(None, u["id"], u["role"], h, "ADMIN_REJECTED_STUDENT", f"Student ID: {sid}"))
+        asyncio.create_task(ws_manager.broadcast_to_user(sid, {"type": "account_status_changed"}))
+        asyncio.create_task(ws_manager.broadcast_to_role(h, "admin", {"type": "admin_action"}))
         return {"ok": True}
 
     res = await users_col.update_one(
@@ -3192,6 +3225,8 @@ async def admin_reject(sid: str, u: dict = Depends(
         
     import asyncio
     asyncio.create_task(log_activity(None, u["id"], u["role"], h, "ADMIN_REJECTED_STUDENT", f"Student ID: {sid}"))
+    asyncio.create_task(ws_manager.broadcast_to_user(sid, {"type": "account_status_changed"}))
+    asyncio.create_task(ws_manager.broadcast_to_role(h, "admin", {"type": "admin_action"}))
     return {"ok": True}
 
 @api.post("/admin/students/{sid}/block")
@@ -3211,6 +3246,8 @@ async def admin_block(sid: str, u: dict = Depends(
         
     import asyncio
     asyncio.create_task(log_activity(None, u["id"], u["role"], h, "ADMIN_BLOCKED_STUDENT", f"Student ID: {sid}"))
+    asyncio.create_task(ws_manager.broadcast_to_user(sid, {"type": "account_status_changed"}))
+    asyncio.create_task(ws_manager.broadcast_to_role(h, "admin", {"type": "admin_action"}))
     return {"ok": True, "message": "Student blocked"}
 
 @api.post("/admin/students/{sid}/remove")
@@ -3224,6 +3261,8 @@ async def admin_remove(sid: str, u: dict = Depends(
         await pending_requests_col.delete_one({"id": sid})
         import asyncio
         asyncio.create_task(log_activity(None, u["id"], u["role"], h, "ADMIN_REMOVED_STUDENT", f"Student ID: {sid} (Pending)"))
+        asyncio.create_task(ws_manager.broadcast_to_user(sid, {"type": "account_status_changed"}))
+        asyncio.create_task(ws_manager.broadcast_to_role(h, "admin", {"type": "admin_action"}))
         return {"ok": True, "message": "Student removed"}
 
     res = await users_col.delete_one(
@@ -3246,6 +3285,8 @@ async def admin_remove(sid: str, u: dict = Depends(
         
     import asyncio
     asyncio.create_task(log_activity(None, u["id"], u["role"], h, "ADMIN_REMOVED_STUDENT", f"Student ID: {sid}"))
+    asyncio.create_task(ws_manager.broadcast_to_user(sid, {"type": "account_status_changed"}))
+    asyncio.create_task(ws_manager.broadcast_to_role(h, "admin", {"type": "admin_action"}))
     return {"ok": True, "message": "Student removed"}
 
 
@@ -3503,6 +3544,7 @@ async def admin_menu_upsert(
         upsert=True,
     )
     saved = await menus_col.find_one({"hostel": h, "day": day}, {"_id": 0})
+    asyncio.create_task(ws_manager.broadcast_to_institution(h, {"type": "admin_action"}))
     return project_menu(saved) if saved else {"ok": True}
 
 
@@ -3679,6 +3721,7 @@ async def admin_wastage_upsert(
         upsert=True,
     )
     saved = await wastage_col.find_one({"hostel": h, "date": target_date}, {"_id": 0})
+    asyncio.create_task(ws_manager.broadcast_to_institution(h, {"type": "admin_action"}))
     return {"ok": True, "wastage": saved}
 
 

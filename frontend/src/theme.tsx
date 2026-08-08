@@ -40,7 +40,7 @@ const LIGHT = {
   info: "#3B82F6",
   border: "rgba(0,0,0,0.06)",
   divider: "#E5E7EB",
-  tabBarBg: "rgba(255,255,255,0.65)",
+  tabBarBg: "rgba(255,255,255,0.90)",
   tabBarBorder: "rgba(0,0,0,0.06)",
   tabBarBlurTint: "light" as "light" | "dark" | "default",
   tabBarActivePill: "rgba(34,197,94,0.14)",
@@ -77,7 +77,7 @@ const DARK: typeof LIGHT = {
   info: "#60A5FA",
   border: "rgba(255,255,255,0.08)",
   divider: "rgba(255,255,255,0.06)",
-  tabBarBg: "rgba(20,27,39,0.55)",
+  tabBarBg: "rgba(20,27,39,0.88)",
   tabBarBorder: "rgba(255,255,255,0.07)",
   tabBarBlurTint: "dark",
   tabBarActivePill: "rgba(52,209,122,0.20)",
@@ -126,15 +126,6 @@ export const shadow = {
 // Live palette — read by both `useTheme()` and the legacy `colors` proxy.
 // ---------------------------------------------------------------------------
 let _active: ThemeColors = LIGHT;
-const _listeners = new Set<() => void>();
-
-function setActive(next: ThemeColors) {
-  if (next === _active) return;
-  _active = next;
-  _listeners.forEach((fn) => {
-    try { fn(); } catch { /* noop */ }
-  });
-}
 
 type Ctx = {
   mode: ThemeMode;
@@ -172,11 +163,9 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const effective = mode === "system" ? system : mode;
   const c = effective === "dark" ? DARK : LIGHT;
 
-  // Keep the live palette in sync so the legacy `colors` proxy serves the
-  // currently active palette.
-  useEffect(() => {
-    setActive(c);
-  }, [c]);
+  // Keep the live palette in sync synchronously so the legacy `colors` proxy 
+  // serves the currently active palette during the immediate re-render.
+  _active = c;
 
   const value = useMemo<Ctx>(
     () => ({ mode, setMode, c, isDark: effective === "dark" }),

@@ -10,10 +10,11 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { Alert } from "react-native";
+import { Alert, DeviceEventEmitter } from "react-native";
 
 import { api, setSessionInvalidatedHandler, type TokenResponse, type User } from "@/src/api/client";
 import { storage } from "@/src/utils/storage";
+import { REALTIME_EVENT } from "@/src/api/useRealtimeSync";
 
 const TOKEN_KEY = "messmate.jwt";
 const USER_KEY = "messmate.user";
@@ -106,6 +107,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => setSessionInvalidatedHandler(null);
   }, [logout]);
 
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener(REALTIME_EVENT, (msg) => {
+      if (msg.type === "account_status_changed" || msg.type === "admin_action") {
+        if (token) {
+          api.me(token)
+            .then((fresh) => {
+              setUser(fresh);
+              storage.setItem(USER_KEY, JSON.stringify(fresh));
+            })
+            .catch(() => {});
+        }
+      }
+    });
+    return () => sub.remove();
+  }, [token]);
+
   const value = useMemo(
     () => ({ token, user, loading, setSession, loginEmail, logout }),
     [token, user, loading, setSession, loginEmail, logout],
@@ -150,7 +167,7 @@ export function useAuthRouting() {
         target = "/";
       }
     } else if (user.role === "admin") {
-      if (top !== "(admin)") target = "/(admin)/students-status";
+      if (top !== "(admin)") target = "/(admin)/dashboard";
     } else {
       // student
       if (user.approval_status === "approved") {

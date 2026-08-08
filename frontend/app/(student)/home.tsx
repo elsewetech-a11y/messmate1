@@ -15,17 +15,19 @@ import {
   TextInput,
   TouchableOpacity,
   View,
+  DeviceEventEmitter,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { api, type CustomQuestion, type MealPlan, type MealType, type TodayResponse } from "@/src/api/client";
 import { useAuth } from "@/src/auth/AuthContext";
+import { REALTIME_EVENT } from "@/src/api/useRealtimeSync";
 import { BarChart as _unused } from "@/src/components/BarChart"; // eslint-disable-line @typescript-eslint/no-unused-vars
 import { Chip } from "@/src/components/Chip";
 import { NotifBell } from "@/src/components/NotifBell";
 import { Toast } from "@/src/components/Toast";
 import { ToggleOnOff } from "@/src/components/ToggleOnOff";
-import { radius, shadow, spacing, typography, colors, useTheme, type ThemeColors } from "@/src/theme";
+import { radius, shadow, spacing, typography, useTheme, type ThemeColors } from "@/src/theme";
 import { formatHomeDate } from "@/src/utils/istDate";
 
 const DEFAULT_PLAN: MealPlan = {
@@ -144,6 +146,17 @@ export default function StudentHome() {
   useEffect(() => {
     setLoading(true);
     load();
+  }, [load]);
+
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener(REALTIME_EVENT, (msg) => {
+      // If we receive an admin action (e.g. menu changed, account approved), quietly refresh.
+      if (msg.type === "admin_action" || msg.type === "account_status_changed") {
+        console.log("[Realtime] Admin action received, quietly reloading...");
+        load();
+      }
+    });
+    return () => sub.remove();
   }, [load]);
 
   useEffect(() => {
@@ -291,7 +304,7 @@ export default function StudentHome() {
         <View style={styles.cardHead}>
           <View style={styles.titleRow}>
             <View style={styles.iconBubble}>
-              <Feather name={MEAL_ICONS[m]} size={18} color={colors.primary} />
+              <Feather name={MEAL_ICONS[m]} size={18} color={c.primary} />
             </View>
             <Text style={styles.cardTitle}>{MEAL_TITLES[m]}</Text>
           </View>
@@ -341,7 +354,7 @@ export default function StudentHome() {
                 value={otherReasonInputs[m]}
                 onChangeText={(t) => updateOtherText(m, t)}
                 placeholder="Tell us more (optional)"
-                placeholderTextColor={colors.textSecondary}
+                placeholderTextColor={c.textSecondary}
                 style={styles.otherInput}
               />
             ) : null}
@@ -372,7 +385,7 @@ export default function StudentHome() {
     return (
       <SafeAreaView style={styles.safe} edges={["top"]}>
         <View style={styles.loadingWrap}>
-          <ActivityIndicator color={colors.primary} />
+          <ActivityIndicator color={c.primary} />
         </View>
       </SafeAreaView>
     );
@@ -402,7 +415,7 @@ export default function StudentHome() {
                 setRefreshing(true);
                 load();
               }}
-              tintColor={colors.primary}
+              tintColor={c.primary}
             />
           }
         >
@@ -461,21 +474,21 @@ export default function StudentHome() {
           {menu ? (
             <View style={[styles.card, styles.summaryCard]} testID="home-menu-summary">
               <View style={styles.summaryRow}>
-                <Feather name="coffee" size={16} color={colors.primary} />
+                <Feather name="coffee" size={16} color={c.primary} />
                 <Text style={styles.summaryLabel}>Breakfast</Text>
                 <Text style={styles.summaryValue} numberOfLines={2}>
                   {menu.breakfast_items.join(", ") || "—"}
                 </Text>
               </View>
               <View style={styles.summaryRow}>
-                <Feather name="sun" size={16} color={colors.primary} />
+                <Feather name="sun" size={16} color={c.primary} />
                 <Text style={styles.summaryLabel}>Lunch</Text>
                 <Text style={styles.summaryValue} numberOfLines={2}>
                   {menu.lunch_items.join(", ") || "—"}
                 </Text>
               </View>
               <View style={styles.summaryRow}>
-                <Feather name="moon" size={16} color={colors.primary} />
+                <Feather name="moon" size={16} color={c.primary} />
                 <Text style={styles.summaryLabel}>Dinner</Text>
                 <Text style={styles.summaryValue} numberOfLines={2}>
                   {menu.dinner_items.join(", ") || "—"}
@@ -500,7 +513,7 @@ export default function StudentHome() {
           <View style={[styles.card, { marginTop: spacing.md }]} testID="home-feedback-card">
             <View style={styles.titleRow}>
               <View style={styles.iconBubble}>
-                <Feather name="message-circle" size={18} color={colors.primary} />
+                <Feather name="message-circle" size={18} color={c.primary} />
               </View>
               <Text style={styles.cardTitle}>Today's Feedback / Suggestion</Text>
             </View>
@@ -512,7 +525,7 @@ export default function StudentHome() {
               value={feedback}
               onChangeText={setFeedback}
               placeholder="Share today's feedback or suggestion about food"
-              placeholderTextColor={colors.textSecondary}
+              placeholderTextColor={c.textSecondary}
               multiline
               style={styles.feedbackInput}
             />
@@ -526,8 +539,8 @@ export default function StudentHome() {
                 {
                   backgroundColor:
                     submittingFeedback || !feedback.trim()
-                      ? colors.inputBg
-                      : colors.primaryLight,
+                      ? c.inputBg
+                      : c.primaryLight,
                 },
               ]}
             >
@@ -535,13 +548,13 @@ export default function StudentHome() {
                 name="send"
                 size={16}
                 color={
-                  !feedback.trim() ? colors.textSecondary : colors.primary
+                  !feedback.trim() ? c.textSecondary : c.primary
                 }
               />
               <Text
                 style={[
                   styles.feedbackBtnText,
-                  { color: !feedback.trim() ? colors.textSecondary : colors.primary },
+                  { color: !feedback.trim() ? c.textSecondary : c.primary },
                 ]}
               >
                 {submittingFeedback ? "Sending..." : "Send anonymously"}

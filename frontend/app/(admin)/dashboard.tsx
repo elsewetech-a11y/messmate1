@@ -11,6 +11,7 @@ import {
   Text,
   TouchableOpacity,
   View,
+  DeviceEventEmitter,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -19,6 +20,7 @@ import { useAuth } from "@/src/auth/AuthContext";
 import { StatTile } from "@/src/components/StatTile";
 import { Toast } from "@/src/components/Toast";
 import { radius, shadow, spacing, typography, useTheme, type ThemeColors } from "@/src/theme";
+import { REALTIME_EVENT } from "@/src/api/useRealtimeSync";
 
 import { SubscriptionGuard } from "@/src/subscription/components/SubscriptionGuard";
 import { SubscriptionWidget } from "@/src/subscription/components/SubscriptionWidget";
@@ -175,7 +177,18 @@ export default function AdminDashboard() {
   useEffect(() => {
     setLoading(true);
     load(forDay);
-  }, [forDay, load]);
+  }, [load, forDay]);
+
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener(REALTIME_EVENT, (msg) => {
+      // Admin should reload if a student updates their plan
+      if (msg.type === "student_action") {
+        console.log("[Realtime] Student action received, quietly reloading dashboard...");
+        load(forDay);
+      }
+    });
+    return () => sub.remove();
+  }, [load, forDay]);
 
   const dateLabel = useMemo(() => {
     if (!data?.date) return "";

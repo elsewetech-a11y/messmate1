@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo } from "react";
+import React, { useState, useCallback, useMemo, useEffect } from "react";
 import {
   StyleSheet,
   View,
@@ -12,6 +12,7 @@ import {
   ScrollView,
   Platform,
   StatusBar,
+  DeviceEventEmitter,
 } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
 import { Feather } from "@expo/vector-icons";
@@ -21,6 +22,7 @@ import { radius, spacing, typography, useTheme } from "@/src/theme";
 import { Toast } from "@/src/components/Toast";
 import { Segmented } from "@/src/components/Segmented";
 import { getDayNameIST } from "@/src/utils/istDate";
+import { REALTIME_EVENT } from "@/src/api/useRealtimeSync";
 
 type StudentNotification = {
   id: string;
@@ -63,6 +65,16 @@ export default function StudentNotificationsScreen() {
       fetchNotifications();
     }, [fetchNotifications])
   );
+
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener(REALTIME_EVENT, (msg) => {
+      if (msg.type === "admin_action" || msg.type === "notification") {
+        console.log("[Realtime] Action received in notifications, reloading...");
+        fetchNotifications();
+      }
+    });
+    return () => sub.remove();
+  }, [fetchNotifications]);
 
   const handleNotificationPress = async (notification: StudentNotification) => {
     setSelectedNotif(notification);

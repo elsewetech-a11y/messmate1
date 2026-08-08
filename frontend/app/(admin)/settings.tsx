@@ -22,7 +22,7 @@ import { NotifBell } from "@/src/components/NotifBell";
 import { Segmented } from "@/src/components/Segmented";
 import { ThemeToggle } from "@/src/components/ThemeToggle";
 import { Toast } from "@/src/components/Toast";
-import { radius, shadow, spacing, typography, colors, useTheme, type ThemeColors } from "@/src/theme";
+import { radius, shadow, spacing, typography, useTheme, type ThemeColors } from "@/src/theme";
 
 export default function AdminSettings() {
   const { c } = useTheme();
@@ -95,7 +95,7 @@ export default function AdminSettings() {
     return (
       <SafeAreaView style={styles.safe} edges={["top"]}>
         <View style={styles.center}>
-          <ActivityIndicator color={colors.primary} />
+          <ActivityIndicator color={c.primary} />
         </View>
       </SafeAreaView>
     );
@@ -193,7 +193,7 @@ export default function AdminSettings() {
             onPress={() => router.push("/(admin)/subscription")}
           >
             <View style={styles.rowIcon}>
-              <Feather name="credit-card" size={16} color={colors.primary} />
+              <Feather name="credit-card" size={16} color={c.primary} />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.rowLabel}>Manage Plan</Text>
@@ -220,7 +220,7 @@ export default function AdminSettings() {
             <Switch
               value={!!commPrefs?.push_notifications}
               onValueChange={(v) => updateCommPrefs({ push_notifications: v })}
-              trackColor={{ false: colors.inputBg, true: colors.primary }}
+              trackColor={{ false: c.inputBg, true: c.primary }}
             />
           </View>
           <View style={styles.divider} />
@@ -235,7 +235,7 @@ export default function AdminSettings() {
             <Switch
               value={!!commPrefs?.email_notifications}
               onValueChange={(v) => updateCommPrefs({ email_notifications: v })}
-              trackColor={{ false: colors.inputBg, true: colors.primary }}
+              trackColor={{ false: c.inputBg, true: c.primary }}
             />
           </View>
           <View style={styles.divider} />
@@ -250,7 +250,7 @@ export default function AdminSettings() {
             <Switch
               value={!!commPrefs?.capacity_alerts}
               onValueChange={(v) => updateCommPrefs({ capacity_alerts: v })}
-              trackColor={{ false: colors.inputBg, true: colors.primary }}
+              trackColor={{ false: c.inputBg, true: c.primary }}
             />
           </View>
           <View style={styles.divider} />
@@ -265,13 +265,13 @@ export default function AdminSettings() {
             <Switch
               value={!!commPrefs?.renewal_reminders}
               onValueChange={(v) => updateCommPrefs({ renewal_reminders: v })}
-              trackColor={{ false: colors.inputBg, true: colors.primary }}
+              trackColor={{ false: c.inputBg, true: c.primary }}
             />
           </View>
           <View style={styles.divider} />
           <TouchableOpacity activeOpacity={0.7} style={styles.row} testID="setting-language">
             <View style={styles.rowIcon}>
-              <Feather name="globe" size={16} color={colors.primary} />
+              <Feather name="globe" size={16} color={c.primary} />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.rowLabel}>Language</Text>
@@ -290,7 +290,7 @@ export default function AdminSettings() {
             onPress={() => router.push("/(auth)/privacy-policy")}
           >
             <View style={styles.rowIcon}>
-              <Feather name="shield" size={16} color={colors.primary} />
+              <Feather name="shield" size={16} color={c.primary} />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.rowLabel}>Privacy Policy</Text>
@@ -305,7 +305,7 @@ export default function AdminSettings() {
             onPress={() => router.push("/(auth)/terms-and-conditions")}
           >
             <View style={styles.rowIcon}>
-              <Feather name="file-text" size={16} color={colors.primary} />
+              <Feather name="file-text" size={16} color={c.primary} />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.rowLabel}>Terms &amp; Conditions</Text>
@@ -324,7 +324,7 @@ export default function AdminSettings() {
             onPress={() => Linking.openURL('mailto:elsewe.tech@gmail.com?subject=MessMate Support')}
           >
             <View style={styles.rowIcon}>
-              <Feather name="mail" size={16} color={colors.primary} />
+              <Feather name="mail" size={16} color={c.primary} />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.rowLabel}>Contact Support</Text>

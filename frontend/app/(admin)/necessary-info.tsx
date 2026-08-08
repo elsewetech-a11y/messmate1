@@ -15,6 +15,7 @@ import {
   TextInput,
   TouchableOpacity,
   View,
+  DeviceEventEmitter,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -31,6 +32,7 @@ import { Segmented } from "@/src/components/Segmented";
 import { Toast } from "@/src/components/Toast";
 import { radius, shadow, spacing, typography, colors, useTheme, type ThemeColors } from "@/src/theme";
 import { SubscriptionGuard } from "@/src/subscription/components/SubscriptionGuard";
+import { REALTIME_EVENT } from "@/src/api/useRealtimeSync";
 
 const DAYS = [
   "monday",
@@ -393,6 +395,16 @@ export default function AdminNecessaryInfo() {
 
   useEffect(() => {
     load();
+  }, [load]);
+
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener(REALTIME_EVENT, (msg) => {
+      if (msg.type === "student_action" || msg.type === "admin_action") {
+        console.log("[Realtime] Action received in necessary-info, reloading...");
+        load();
+      }
+    });
+    return () => sub.remove();
   }, [load]);
 
   const currentMenu = useMemo(

@@ -4,11 +4,6 @@ Multi-tenant: every domain doc is scoped by `hostel` (institution_or_hostel_name
 Two-step login with mocked OTP. In-app notifications + push token capture.
 """
 
-import socket
-# MongoDB Atlas Free Tier drops IPv6. Force IPv4 for pymongo and all networking:
-_old_getaddrinfo = socket.getaddrinfo
-socket.getaddrinfo = lambda *args, **kwargs: [r for r in _old_getaddrinfo(*args, **kwargs) if r[0] == socket.AF_INET]
-
 from security import rate_limit
 from email.utils import formataddr as _formataddr
 from email.message import EmailMessage as _EmailMessage

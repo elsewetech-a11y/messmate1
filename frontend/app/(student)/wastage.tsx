@@ -10,6 +10,7 @@ import {
   StyleSheet,
   Text,
   View,
+  DeviceEventEmitter,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -18,7 +19,8 @@ import { useAuth } from "@/src/auth/AuthContext";
 import { BarChart } from "@/src/components/BarChart";
 import { Segmented } from "@/src/components/Segmented";
 import { Toast } from "@/src/components/Toast";
-import { radius, shadow, spacing, typography, colors, useTheme, type ThemeColors } from "@/src/theme";
+import { radius, shadow, spacing, typography, useTheme, type ThemeColors } from "@/src/theme";
+import { REALTIME_EVENT } from "@/src/api/useRealtimeSync";
 
 type Range = "7" | "30" | "90";
 type MealFilter = "all" | "breakfast" | "lunch" | "dinner";
@@ -56,6 +58,16 @@ export default function StudentWastage() {
     load();
   }, [load]);
 
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener(REALTIME_EVENT, (msg) => {
+      if (msg.type === "admin_action" || msg.type === "student_action") {
+        console.log("[Realtime] Action received in wastage, reloading...");
+        load();
+      }
+    });
+    return () => sub.remove();
+  }, [load]);
+
   const summary = data?.summary;
   const series = data?.series ?? [];
 
@@ -76,7 +88,7 @@ export default function StudentWastage() {
               setRefreshing(true);
               load();
             }}
-            tintColor={colors.primary}
+            tintColor={c.primary}
           />
         }
       >
@@ -90,7 +102,7 @@ export default function StudentWastage() {
 
         {loading ? (
           <View style={styles.loadingWrap}>
-            <ActivityIndicator color={colors.primary} />
+            <ActivityIndicator color={c.primary} />
           </View>
         ) : (
           <>
@@ -103,21 +115,21 @@ export default function StudentWastage() {
               <View style={styles.divider} />
               <View style={styles.row3}>
                 <View style={styles.tinyStat}>
-                  <Feather name="coffee" size={14} color={colors.primary} />
+                  <Feather name="coffee" size={14} color={c.primary} />
                   <Text style={styles.tinyLabel}>Breakfast</Text>
                   <Text style={styles.tinyValue} testID="wastage-today-breakfast">
                     {fmt(summary?.today?.breakfast)}
                   </Text>
                 </View>
                 <View style={styles.tinyStat}>
-                  <Feather name="sun" size={14} color={colors.primary} />
+                  <Feather name="sun" size={14} color={c.primary} />
                   <Text style={styles.tinyLabel}>Lunch</Text>
                   <Text style={styles.tinyValue} testID="wastage-today-lunch">
                     {fmt(summary?.today?.lunch)}
                   </Text>
                 </View>
                 <View style={styles.tinyStat}>
-                  <Feather name="moon" size={14} color={colors.primary} />
+                  <Feather name="moon" size={14} color={c.primary} />
                   <Text style={styles.tinyLabel}>Dinner</Text>
                   <Text style={styles.tinyValue} testID="wastage-today-dinner">
                     {fmt(summary?.today?.dinner)}

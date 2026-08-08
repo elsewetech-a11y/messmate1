@@ -10,6 +10,7 @@ import {
   Text,
   TouchableOpacity,
   View,
+  DeviceEventEmitter,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -22,7 +23,8 @@ import {
 import { useAuth } from "@/src/auth/AuthContext";
 import { Segmented } from "@/src/components/Segmented";
 import { Toast } from "@/src/components/Toast";
-import { radius, shadow, spacing, typography, colors, useTheme, type ThemeColors } from "@/src/theme";
+import { radius, shadow, spacing, typography, useTheme, type ThemeColors } from "@/src/theme";
+import { REALTIME_EVENT } from "@/src/api/useRealtimeSync";
 
 type ViewMode = "weekly" | "monthly";
 
@@ -70,6 +72,16 @@ export default function StudentMenu() {
     load();
   }, [load]);
 
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener(REALTIME_EVENT, (msg) => {
+      if (msg.type === "admin_action") {
+        console.log("[Realtime] Action received in menu, reloading...");
+        load();
+      }
+    });
+    return () => sub.remove();
+  }, [load]);
+
   const handleReact = async (day: string, meal: MealType, current: Reaction, next: Reaction) => {
     if (!token) return;
     const key = `${day}:${meal}`;
@@ -106,7 +118,7 @@ export default function StudentMenu() {
             <View style={styles.mealHead}>
               <View style={styles.mealHeadLeft}>
                 <View style={styles.mealIconBubble}>
-                  <Feather name={MEAL_ICON[m]} size={14} color={colors.primary} />
+                  <Feather name={MEAL_ICON[m]} size={14} color={c.primary} />
                 </View>
                 <Text style={styles.mealTitle}>{cap(m)}</Text>
               </View>
@@ -118,15 +130,15 @@ export default function StudentMenu() {
                   style={[
                     styles.reactBtn,
                     reaction === "like" && {
-                      backgroundColor: colors.primary,
-                      borderColor: colors.primary,
+                      backgroundColor: c.primary,
+                      borderColor: c.primary,
                     },
                   ]}
                 >
                   <Feather
                     name="thumbs-up"
                     size={14}
-                    color={reaction === "like" ? "#fff" : colors.textSecondary}
+                    color={reaction === "like" ? "#fff" : c.textSecondary}
                   />
                 </TouchableOpacity>
                 <TouchableOpacity
@@ -136,15 +148,15 @@ export default function StudentMenu() {
                   style={[
                     styles.reactBtn,
                     reaction === "dislike" && {
-                      backgroundColor: colors.danger,
-                      borderColor: colors.danger,
+                      backgroundColor: c.danger,
+                      borderColor: c.danger,
                     },
                   ]}
                 >
                   <Feather
                     name="thumbs-down"
                     size={14}
-                    color={reaction === "dislike" ? "#fff" : colors.textSecondary}
+                    color={reaction === "dislike" ? "#fff" : c.textSecondary}
                   />
                 </TouchableOpacity>
               </View>
@@ -179,7 +191,7 @@ export default function StudentMenu() {
     return (
       <SafeAreaView style={styles.safe} edges={["top"]}>
         <View style={styles.loadingWrap}>
-          <ActivityIndicator color={colors.primary} />
+          <ActivityIndicator color={c.primary} />
         </View>
       </SafeAreaView>
     );
@@ -202,7 +214,7 @@ export default function StudentMenu() {
               setRefreshing(true);
               load();
             }}
-            tintColor={colors.primary}
+            tintColor={c.primary}
           />
         }
       >

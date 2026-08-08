@@ -14,6 +14,7 @@ import {
   TextInput,
   TouchableOpacity,
   View,
+  DeviceEventEmitter,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -30,8 +31,9 @@ import { Button } from "@/src/components/Button";
 import { Segmented } from "@/src/components/Segmented";
 import { StatTile } from "@/src/components/StatTile";
 import { Toast } from "@/src/components/Toast";
-import { radius, shadow, spacing, typography, colors, useTheme, type ThemeColors } from "@/src/theme";
+import { radius, shadow, spacing, typography, useTheme, type ThemeColors } from "@/src/theme";
 import { SubscriptionGuard } from "@/src/subscription/components/SubscriptionGuard";
+import { REALTIME_EVENT } from "@/src/api/useRealtimeSync";
 
 type Range = "7" | "30" | "90";
 type MealFilter = "all" | MealType;
@@ -204,6 +206,16 @@ export default function AdminWastageCalc() {
 
   useEffect(() => {
     load();
+  }, [load]);
+
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener(REALTIME_EVENT, (msg) => {
+      if (msg.type === "student_action" || msg.type === "admin_action") {
+        console.log("[Realtime] Action received in wastage-calc, reloading...");
+        load();
+      }
+    });
+    return () => sub.remove();
   }, [load]);
 
   const onSave = async () => {

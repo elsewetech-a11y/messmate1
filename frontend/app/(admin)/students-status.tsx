@@ -12,9 +12,10 @@ import {
   Text,
   TouchableOpacity,
   View,
-  Modal,
   TextInput,
-  Alert
+  Alert,
+  Modal,
+  DeviceEventEmitter,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -31,7 +32,9 @@ import { LikeDislikeBar } from "@/src/components/LikeDislikeBar";
 import { Segmented } from "@/src/components/Segmented";
 import { StatTile } from "@/src/components/StatTile";
 import { Toast } from "@/src/components/Toast";
-import { radius, shadow, spacing, typography, colors, useTheme, type ThemeColors } from "@/src/theme";
+import { ToggleOnOff } from "@/src/components/ToggleOnOff";
+import { radius, shadow, spacing, typography, useTheme, type ThemeColors } from "@/src/theme";
+import { REALTIME_EVENT } from "@/src/api/useRealtimeSync";
 import { SubscriptionGuard } from "@/src/subscription/components/SubscriptionGuard";
 import { formatDateIST } from "@/src/utils/istDate";
 
@@ -159,6 +162,18 @@ export default function AdminStudentsStatus() {
     load();
   }, [load]);
 
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener(REALTIME_EVENT, (msg) => {
+      // If student updates their plan or another admin changes student status, quietly reload.
+      if (msg.type === "student_action" || msg.type === "admin_action" || msg.type === "account_status_changed") {
+        console.log("[Realtime] Action received, quietly reloading students status...");
+        load();
+        if (activeList) fetchList(activeList);
+      }
+    });
+    return () => sub.remove();
+  }, [load, activeList, fetchList]);
+
   const onApprove = async (id: string) => {
     if (!token) return;
     setActing(id);
@@ -246,7 +261,7 @@ export default function AdminStudentsStatus() {
       <SubscriptionGuard role="admin">
       <SafeAreaView style={styles.safe} edges={["top"]}>
         <View style={styles.center}>
-          <ActivityIndicator color={colors.primary} />
+          <ActivityIndicator color={c.primary} />
         </View>
       </SafeAreaView>
       </SubscriptionGuard>
@@ -470,7 +485,7 @@ export default function AdminStudentsStatus() {
               setRefreshing(true);
               load();
             }}
-            tintColor={colors.primary}
+            tintColor={c.primary}
           />
         }
       >
@@ -660,7 +675,7 @@ export default function AdminStudentsStatus() {
           <View style={styles.card} testID={`meal-detail-${activeMeal}`}>
             <View style={styles.titleRow}>
               <View style={styles.titleIcon}>
-                <Feather name={MEAL_ICON[activeMeal]} size={18} color={colors.primary} />
+                <Feather name={MEAL_ICON[activeMeal]} size={18} color={c.primary} />
               </View>
               <Text style={styles.cardTitle}>{cap(activeMeal)}</Text>
             </View>
@@ -671,7 +686,7 @@ export default function AdminStudentsStatus() {
                 <Text style={styles.eatLabel}>Eating</Text>
               </View>
               <View style={styles.eatBox}>
-                <Text style={[styles.eatNum, { color: colors.danger }]}>
+                <Text style={[styles.eatNum, { color: c.danger }]}>
                   {meal.not_eating_count}
                 </Text>
                 <Text style={styles.eatLabel}>Not eating</Text>
@@ -770,7 +785,7 @@ export default function AdminStudentsStatus() {
                   <Feather
                     name="message-circle"
                     size={14}
-                    color={colors.primary}
+                    color={c.primary}
                     style={{ marginTop: 3 }}
                   />
                   <View style={{ flex: 1 }}>

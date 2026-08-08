@@ -25,6 +25,7 @@ export default function StudentTabsLayout() {
           tabBarActiveTintColor: c.primary,
           tabBarInactiveTintColor: c.textSecondary,
           sceneStyle: { backgroundColor: c.bg },
+          freezeOnBlur: false,
         }}
       >
         <Tabs.Screen

@@ -9,7 +9,13 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { AuthProvider, useAuth, useAuthRouting } from "@/src/auth/AuthContext";
 import { useIconFonts } from "@/src/hooks/use-icon-fonts";
 import { ThemeProvider, useTheme } from "@/src/theme";
+import { ThemeProvider as NavThemeProvider, DarkTheme, DefaultTheme } from "@react-navigation/native";
 import { registerForPush } from "@/src/utils/notifications";
+import { useRealtimeSync } from "@/src/api/useRealtimeSync";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { enableFreeze } from "react-native-screens";
+
+enableFreeze(false);
 
 LogBox.ignoreAllLogs(true);
 
@@ -49,8 +55,22 @@ if (Platform.OS === "android") {
 function RoutingShell() {
   useAuthRouting();
   const { c, isDark } = useTheme();
+  const navTheme = {
+    dark: isDark,
+    colors: {
+      ...(isDark ? DarkTheme.colors : DefaultTheme.colors),
+      primary: c.primary,
+      background: c.bg,
+      card: c.card,
+      text: c.textPrimary,
+      border: c.border,
+      notification: c.primary,
+    },
+    fonts: isDark ? DarkTheme.fonts : DefaultTheme.fonts,
+  };
+
   return (
-    <>
+    <NavThemeProvider value={navTheme}>
       <StatusBar
         barStyle={isDark ? "light-content" : "dark-content"}
         backgroundColor={c.bg}
@@ -60,6 +80,7 @@ function RoutingShell() {
           headerShown: false,
           animation: "fade",
           contentStyle: { backgroundColor: c.bg },
+          freezeOnBlur: false,
         }}
       >
         <Stack.Screen name="index" />
@@ -82,7 +103,7 @@ function RoutingShell() {
           }}
         />
       </Stack>
-    </>
+    </NavThemeProvider>
   );
 }
 
@@ -118,8 +139,16 @@ function PushBridge() {
       route(String(url));
     });
 
-    Notifications.getLastNotificationResponseAsync().then((response) => {
+    Notifications.getLastNotificationResponseAsync().then(async (response) => {
       if (!response) return;
+      // Only route if the user explicitly tapped the notification
+      if (response.actionIdentifier !== Notifications.DEFAULT_ACTION_IDENTIFIER) return;
+
+      const notifId = response.notification.request.identifier;
+      const lastHandled = await AsyncStorage.getItem("last_handled_notif");
+      if (lastHandled === notifId) return;
+      
+      await AsyncStorage.setItem("last_handled_notif", notifId);
       const data = (response.notification.request.content.data || {}) as Record<string, any>;
       const url = data.deeplink || data.action_url || "/notifications";
       route(String(url));
@@ -130,6 +159,11 @@ function PushBridge() {
     };
   }, [router]);
 
+  return null;
+}
+
+function RealtimeBridge() {
+  useRealtimeSync();
   return null;
 }
 
@@ -149,6 +183,7 @@ export default function RootLayout() {
       <ThemeProvider>
         <AuthProvider>
           <PushBridge />
+          <RealtimeBridge />
           <RoutingShell />
         </AuthProvider>
       </ThemeProvider>

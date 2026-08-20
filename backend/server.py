@@ -1046,8 +1046,28 @@ def _build_forgot_email(user_name: str, otp: str) -> _EmailMessage:
     return msg
 
 
-async def _get_gmail_access_token() -> str:
-    """Exchange refresh token for an access token."""
+# ---------------------------------------------------------------------------
+# Gmail access-token cache
+# Google OAuth2 access tokens are valid for 3600 s. We cache ours for 55 min
+# (3300 s) so we never hammer the token endpoint on every email send or retry.
+# The cache is intentionally invalidated whenever the Gmail API returns 401 so
+# that a stale/revoked token is immediately replaced.
+# ---------------------------------------------------------------------------
+_gmail_token_cache: dict = {"token": None, "expires_at": 0.0}
+
+
+async def _get_gmail_access_token(*, force_refresh: bool = False) -> str:
+    """Return a valid Gmail OAuth2 access token, using a 55-minute cache.
+
+    Pass force_refresh=True (e.g. after a 401 from the Gmail API) to bypass
+    the cache and obtain a fresh token immediately.
+    """
+    import time as _time
+
+    now = _time.monotonic()
+    if not force_refresh and _gmail_token_cache["token"] and now < _gmail_token_cache["expires_at"]:
+        return _gmail_token_cache["token"]  # cache hit
+
     url = "https://oauth2.googleapis.com/token"
     payload = {
         "client_id": GMAIL_CLIENT_ID,
@@ -1055,11 +1075,42 @@ async def _get_gmail_access_token() -> str:
         "refresh_token": GMAIL_REFRESH_TOKEN,
         "grant_type": "refresh_token",
     }
+    logger.debug(
+        "Gmail: requesting new access token (client_id=%s…, refresh_token=%s…)",
+        GMAIL_CLIENT_ID[:20],
+        GMAIL_REFRESH_TOKEN[:15],
+    )
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(url, data=payload)
+
     if resp.status_code != 200:
-        raise RuntimeError(f"Failed to refresh Gmail token: {resp.status_code} {resp.text}")
-    return resp.json()["access_token"]
+        err_body = resp.text
+        # Detect invalid_grant explicitly and give an actionable message.
+        if "invalid_grant" in err_body:
+            logger.error(
+                "Gmail OAuth2 invalid_grant error. The refresh token may have been "
+                "revoked or the client credentials do not match the token. "
+                "Re-run get_gmail_token.py to generate a fresh refresh token and "
+                "update GMAIL_REFRESH_TOKEN in .env (and on Render if deployed). "
+                "client_id=%s… refresh_token=%s…",
+                GMAIL_CLIENT_ID[:20],
+                GMAIL_REFRESH_TOKEN[:15],
+            )
+            raise RuntimeError(
+                f"Failed to refresh Gmail token: {resp.status_code} {err_body} — "
+                "The Gmail refresh token is invalid or revoked. "
+                "Re-run backend/get_gmail_token.py to generate a new refresh token."
+            )
+        raise RuntimeError(f"Failed to refresh Gmail token: {resp.status_code} {err_body}")
+
+    data = resp.json()
+    access_token = data["access_token"]
+    # Google tokens expire in 3600 s; cache for 55 min (3300 s) to be safe.
+    expires_in = int(data.get("expires_in", 3600))
+    _gmail_token_cache["token"] = access_token
+    _gmail_token_cache["expires_at"] = now + min(expires_in - 300, 3300)
+    logger.debug("Gmail: access token cached for %d s", _gmail_token_cache["expires_at"] - now)
+    return access_token
 
 
 async def _gmail_send_async(
@@ -1081,37 +1132,49 @@ async def _gmail_send_async(
     # Gmail API requires URL-safe base64 encoding
     raw_msg = _base64.urlsafe_b64encode(msg.as_bytes()).decode('utf-8')
 
+    # Fetch the access token once before the retry loop. Only force-refresh on
+    # a 401 response from the Gmail API (stale/expired cached token).
+    force_token_refresh = False
+
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
-            # Refresh token on every attempt to ensure it's valid
-            access_token = await _get_gmail_access_token()
+            access_token = await _get_gmail_access_token(force_refresh=force_token_refresh)
+            force_token_refresh = False  # reset; only re-raise on explicit 401
             headers = {
                 "Authorization": f"Bearer {access_token}",
                 "Content-Type": "application/json",
             }
-            url = f"https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
-            
+            send_url = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
+
             async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
                 resp = await client.post(
-                    url, 
-                    json={"raw": raw_msg}, 
-                    headers=headers
+                    send_url,
+                    json={"raw": raw_msg},
+                    headers=headers,
                 )
-            
+
             if resp.status_code in (200, 201):
                 logger.info("Gmail: email sent to=%s attempt=%d id=%s", to, attempt, resp.json().get("id"))
                 return  # success
-            
+
+            if resp.status_code == 401:
+                # Cached access token was rejected — clear it and force a fresh exchange.
+                logger.warning("Gmail: 401 Unauthorized on attempt %d, forcing token refresh", attempt)
+                _gmail_token_cache["token"] = None
+                _gmail_token_cache["expires_at"] = 0.0
+                force_token_refresh = True
+                raise RuntimeError(f"Gmail API 401 Unauthorized (token refreshed for retry)")
+
             err_body = resp.text
             raise RuntimeError(f"Gmail API error {resp.status_code}: {err_body}")
         except Exception as e:
             last_exc = e
             logger.warning(
                 "Gmail API attempt %d/%d failed to=%s err=%s",
-                attempt, _MAX_RETRIES, to, e
+                attempt, _MAX_RETRIES, to, e,
             )
             if attempt < _MAX_RETRIES:
-                await asyncio.sleep(2 ** (attempt - 1))  # 1s then 2s backoff
+                await asyncio.sleep(2 ** (attempt - 1))  # 1 s then 2 s backoff
 
     raise last_exc
 
@@ -1759,9 +1822,9 @@ async def forgot_password(payload: ForgotPasswordRequest):
     err = await send_email_otp(
         to=email, user_name=user["full_name"], otp=otp, purpose="forgot_password",
     )
-    if err and SMTP_CONFIGURED:
+    if err and GMAIL_CONFIGURED:
         logger.error(
-            "SMTP failed to send forgot password email to %s. Error: %s",
+            "Gmail failed to send forgot password email to %s. Error: %s",
             email, err)
         raise HTTPException(
             status_code=424,

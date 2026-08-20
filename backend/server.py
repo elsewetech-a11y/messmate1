@@ -4,6 +4,15 @@ Multi-tenant: every domain doc is scoped by `hostel` (institution_or_hostel_name
 Two-step login with mocked OTP. In-app notifications + push token capture.
 """
 
+import sys
+import os as _os
+# Ensure the directory containing server.py is on sys.path so that local
+# modules (ws_manager, security, etc.) can always be imported regardless of
+# the working directory (e.g. when Render runs uvicorn from the repo root).
+_BACKEND_DIR = _os.path.dirname(_os.path.abspath(__file__))
+if _BACKEND_DIR not in sys.path:
+    sys.path.insert(0, _BACKEND_DIR)
+
 from security import rate_limit
 from email.utils import formataddr as _formataddr
 from email.message import EmailMessage as _EmailMessage

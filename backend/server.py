@@ -229,6 +229,21 @@ async def health_check():
     return {"status": "ok", "service": "MessMate API", "version": "1.0.0"}
 
 
+@app.get("/api/debug/env-status")
+async def debug_env_status():
+    db1_raw = os.getenv("DATABASE_1_URI") or os.getenv("MONGO_URL") or "mongodb://127.0.0.1:27017"
+    masked = db1_raw.split("@")[-1] if "@" in db1_raw else db1_raw[:20]
+    return {
+        "DATABASE_1_URI_set": bool(os.getenv("DATABASE_1_URI")),
+        "DATABASE_2_URI_set": bool(os.getenv("DATABASE_2_URI")),
+        "DATABASE_3_URI_set": bool(os.getenv("DATABASE_3_URI")),
+        "MONGO_URL_set": bool(os.getenv("MONGO_URL")),
+        "JWT_SECRET_set": bool(os.getenv("JWT_SECRET")),
+        "target_cluster": masked,
+        "gmail_configured": GMAIL_CONFIGURED,
+    }
+
+
 @app.get("/download/apk")
 @app.get("/MessMate-Release.apk")
 async def download_apk():

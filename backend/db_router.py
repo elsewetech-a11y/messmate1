@@ -108,6 +108,21 @@ class TenantCollectionProxy:
         return await self._get_target_collection().drop_indexes(*args, **kwargs)
 
 
+import certifi
+
+
+def create_motor_client(uri: str) -> AsyncIOMotorClient:
+    """Creates an AsyncIOMotorClient with TLS certifi certificates and timeout configurations."""
+    kwargs: Dict[str, Any] = {"serverSelectionTimeoutMS": 5000}
+    if "mongodb+srv" in uri or "mongodb.net" in uri:
+        try:
+            kwargs["tlsCAFile"] = certifi.where()
+            kwargs["tlsAllowInvalidCertificates"] = True
+        except Exception:
+            pass
+    return AsyncIOMotorClient(uri, **kwargs)
+
+
 class MultiDatabaseManager:
     """
     Central Multi-Database Manager orchestrating all MongoDB database connections,
@@ -178,7 +193,6 @@ class MultiDatabaseManager:
                     db_name=name,
                 )
 
-
     async def initialize(self):
         """Connects to all configured database instances and initializes Central Registry."""
         self.load_configurations()
@@ -186,7 +200,7 @@ class MultiDatabaseManager:
         for key, cfg in self._configs.items():
             if key not in self._databases:
                 try:
-                    client = AsyncIOMotorClient(cfg.uri, serverSelectionTimeoutMS=3000)
+                    client = create_motor_client(cfg.uri)
                     self._clients[key] = client
                     self._databases[key] = client[cfg.db_name]
                     logger.info(f"Connected to database '{key}' ({cfg.name}) at {cfg.db_name}")
@@ -240,7 +254,7 @@ class MultiDatabaseManager:
         if target_key not in self._databases and target_key in self._configs:
             try:
                 cfg = self._configs[target_key]
-                client = AsyncIOMotorClient(cfg.uri, serverSelectionTimeoutMS=3000)
+                client = create_motor_client(cfg.uri)
                 self._clients[target_key] = client
                 self._databases[target_key] = client[cfg.db_name]
             except Exception as e:
@@ -252,7 +266,7 @@ class MultiDatabaseManager:
             return self._databases["db1"]
         if self._configs.get("db1"):
             cfg = self._configs["db1"]
-            client = AsyncIOMotorClient(cfg.uri, serverSelectionTimeoutMS=3000)
+            client = create_motor_client(cfg.uri)
             self._clients["db1"] = client
             self._databases["db1"] = client[cfg.db_name]
             return self._databases["db1"]

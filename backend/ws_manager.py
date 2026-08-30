@@ -32,7 +32,7 @@ class ConnectionManager:
     async def broadcast_to_institution(self, institution: str, message: dict):
         if institution in self.active_connections:
             to_remove = set()
-            for ws in self.active_connections[institution]:
+            for ws in list(self.active_connections[institution]):
                 try:
                     await ws.send_json(message)
                 except Exception as e:
@@ -44,7 +44,7 @@ class ConnectionManager:
     async def broadcast_to_role(self, institution: str, role: str, message: dict):
         if institution in self.active_connections:
             to_remove = set()
-            for ws in self.active_connections[institution]:
+            for ws in list(self.active_connections[institution]):
                 meta = self.ws_metadata.get(ws)
                 if meta and meta["role"] == role:
                     try:
@@ -57,7 +57,7 @@ class ConnectionManager:
 
     async def broadcast_to_user(self, user_id: str, message: dict):
         to_remove = set()
-        for ws, meta in self.ws_metadata.items():
+        for ws, meta in list(self.ws_metadata.items()):
             if meta["user_id"] == user_id:
                 try:
                     await ws.send_json(message)

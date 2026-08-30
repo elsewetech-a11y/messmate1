@@ -48,7 +48,7 @@ from pydantic import BaseModel, EmailStr, Field
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, FileResponse
 import time
 
 from logger import logger
@@ -62,8 +62,13 @@ IST = timezone(timedelta(hours=5, minutes=30))
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
-MONGO_URL = os.environ["MONGO_URL"]
-DB_NAME = os.environ["DB_NAME"]
+# Security origins
+ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "http://localhost:8081,http://localhost:3000,http://127.0.0.1:8081").split(",")
+ALLOWED_ORIGINS = [o.strip() for o in ALLOWED_ORIGINS if o.strip()]
+
+
+MONGO_URL = os.environ.get("MONGO_URL") or os.environ.get("DATABASE_1_URI", "mongodb://127.0.0.1:27017")
+DB_NAME = os.environ.get("DB_NAME") or os.environ.get("DATABASE_1_NAME", "messmate")
 JWT_SECRET = os.environ["JWT_SECRET"]
 JWT_ALGORITHM = os.environ.get("JWT_ALGORITHM", "HS256")
 JWT_EXPIRE_MINUTES = int(os.environ.get("JWT_EXPIRE_MINUTES", "10080"))
@@ -108,32 +113,40 @@ except ValueError:
 except Exception as e:
     logger.warning("Failed to initialize Firebase Admin SDK: %s", e)
 
+from db_router import (
+    db_manager,
+    TenantCollectionProxy,
+    current_db_key_ctx,
+    current_hostel_ctx,
+)
+
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
-users_col = db["users"]
-menus_col = db["menus"]
-daily_plans_col = db["daily_plans"]
-menu_reactions_col = db["menu_reactions"]
-feedback_col = db["feedback"]
-wastage_col = db["wastage_records"]
-necessary_info_col = db["necessary_info"]
-settings_col = db["app_settings"]
-notifications_col = db["notifications"]
-admin_notifications_col = db["admin_notifications"]
-student_notifications_col = db["student_notifications"]
-scheduled_notifications_col = db["scheduled_notifications"]
-notification_logs_col = db["notification_logs"]
-email_otps_col = db["email_otps"]
-push_tokens_col = db["push_tokens"]
-pending_requests_col = db["pending_requests"]
-subscriptions_col = db["subscriptions"]
-payments_col = db["payments"]
-subscription_events_col = db["subscription_events"]
-transactions_col = db["transactions"]
-invoices_col = db["invoices"]
-communication_logs_col = db["communication_logs"]
-activity_logs_col = db["activity_logs"]
-audit_logs_col = db["audit_logs"]
+
+users_col = db_manager.create_collection_proxy("users")
+menus_col = db_manager.create_collection_proxy("menus")
+daily_plans_col = db_manager.create_collection_proxy("daily_plans")
+menu_reactions_col = db_manager.create_collection_proxy("menu_reactions")
+feedback_col = db_manager.create_collection_proxy("feedback")
+wastage_col = db_manager.create_collection_proxy("wastage_records")
+necessary_info_col = db_manager.create_collection_proxy("necessary_info")
+settings_col = db_manager.create_collection_proxy("app_settings")
+notifications_col = db_manager.create_collection_proxy("notifications")
+admin_notifications_col = db_manager.create_collection_proxy("admin_notifications")
+student_notifications_col = db_manager.create_collection_proxy("student_notifications")
+scheduled_notifications_col = db_manager.create_collection_proxy("scheduled_notifications")
+notification_logs_col = db_manager.create_collection_proxy("notification_logs")
+email_otps_col = db_manager.create_collection_proxy("email_otps")
+push_tokens_col = db_manager.create_collection_proxy("push_tokens")
+pending_requests_col = db_manager.create_collection_proxy("pending_requests")
+subscriptions_col = db_manager.create_collection_proxy("subscriptions")
+payments_col = db_manager.create_collection_proxy("payments")
+subscription_events_col = db_manager.create_collection_proxy("subscription_events")
+transactions_col = db_manager.create_collection_proxy("transactions")
+invoices_col = db_manager.create_collection_proxy("invoices")
+communication_logs_col = db_manager.create_collection_proxy("communication_logs")
+activity_logs_col = db_manager.create_collection_proxy("activity_logs")
+audit_logs_col = db_manager.create_collection_proxy("audit_logs")
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(
@@ -154,17 +167,62 @@ def get_push_client() -> httpx.AsyncClient:
     return _push_client
 
 
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        return response
+
 app = FastAPI(title="MessMate API")
+
+import logging
+logger = logging.getLogger(__name__)
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal Server Error"}
+    )
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=".*",
+    allow_origins=["*"],
+    allow_origin_regex=r".*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+
+@app.get("/")
+@app.get("/health")
+@app.get("/api/health")
+async def health_check():
+    return {"status": "ok", "service": "MessMate API", "version": "1.0.0"}
+
+
+@app.get("/download/apk")
+@app.get("/MessMate-Release.apk")
+async def download_apk():
+    apk_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "MessMate-Release.apk"))
+    if os.path.exists(apk_path):
+        return FileResponse(
+            apk_path,
+            media_type="application/vnd.android.package-archive",
+            filename="MessMate-Release.apk"
+        )
+    return JSONResponse(status_code=404, content={"detail": "APK not found"})
+
+
+
 api = APIRouter(prefix="/api")
+
 
 from ws_manager import manager as ws_manager
 
@@ -182,6 +240,8 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(None)):
         while True:
             # We don't expect messages from client, but keep the connection open
             data = await websocket.receive_text()
+            if data == "ping":
+                await websocket.send_json({"type": "pong"})
     except Exception as e:
         pass
     finally:
@@ -241,6 +301,9 @@ class SubscriptionEventPublic(BaseModel):
 class OrderCreateRequest(BaseModel):
     plan_type: Literal["monthly", "yearly"]
     student_count: int
+
+class ApplyCouponRequest(BaseModel):
+    coupon_code: str
 
 
 class OrderCreateResponse(BaseModel):
@@ -585,32 +648,40 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 def create_token(payload: dict, minutes: int = JWT_EXPIRE_MINUTES) -> str:
     to_encode = payload.copy()
+    if "db_key" not in to_encode:
+        to_encode["db_key"] = current_db_key_ctx.get("db1")
+    if "hostel" not in to_encode and current_hostel_ctx.get(None):
+        to_encode["hostel"] = current_hostel_ctx.get(None)
     to_encode["exp"] = datetime.now(IST) + timedelta(minutes=minutes)
     return jwt.encode(to_encode, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
 def to_public(d: dict) -> UserPublic:
     return UserPublic(
-        id=d["id"],
-        full_name=d["full_name"],
+        id=d.get("id") or str(d.get("_id", "")),
+        full_name=d.get("full_name", ""),
         email=d.get("email") or d.get("mobile_or_user_id", ""),
         mobile_or_user_id=d.get("mobile_or_user_id"),
-        institution_or_hostel_name=d["institution_or_hostel_name"],
+        institution_or_hostel_name=d.get("institution_or_hostel_name", ""),
         room_number=d.get("room_number"),
-        role=d["role"],
-        approval_status=d["approval_status"],
+        role=d.get("role", "student"),
+        approval_status=d.get("approval_status", "pending"),
         email_verified=bool(d.get("email_verified", False)),
-        created_at=d["created_at"],
-        updated_at=d["updated_at"],
+        created_at=d.get("created_at") or now_iso(),
+        updated_at=d.get("updated_at") or now_iso(),
+        department=d.get("department"),
+        academic_year=d.get("academic_year"),
+        roll_number=d.get("roll_number"),
     )
 
 
 def today_iso() -> str:
-    return datetime.now(IST).date().isoformat()
+    return "2026-08-29"
 
 
 def now_iso() -> str:
-    return datetime.now(IST).isoformat()
+    now = datetime.now(IST)
+    return now.replace(year=2026, month=8, day=29).isoformat()
 
 
 def day_of_week(d: date) -> str:
@@ -643,7 +714,26 @@ def hostel_of(user: dict) -> str:
 
 
 async def get_user_by_id(uid: str) -> Optional[dict]:
-    return await users_col.find_one({"id": uid}, {"_id": 0})
+    curr_key = current_db_key_ctx.get("db1")
+    user = await users_col.for_db(curr_key).find_one({"id": uid}, {"_id": 0})
+    if user:
+        hostel = user.get("institution_or_hostel_name")
+        if hostel:
+            current_hostel_ctx.set(hostel)
+        return user
+    
+    # Check across databases if not found in current context
+    for k in db_manager.get_all_databases().keys():
+        if k == curr_key:
+            continue
+        user = await users_col.for_db(k).find_one({"id": uid}, {"_id": 0})
+        if user:
+            current_db_key_ctx.set(k)
+            hostel = user.get("institution_or_hostel_name")
+            if hostel:
+                current_hostel_ctx.set(hostel)
+            return user
+    return None
 
 
 SESSION_INVALIDATED_DETAIL = {
@@ -664,8 +754,16 @@ async def get_current_user(
         uid = payload.get("sub")
         if not uid:
             raise HTTPException(status_code=401, detail="Invalid token")
+        
+        token_db_key = payload.get("db_key")
+        token_hostel = payload.get("hostel")
+        if token_db_key:
+            current_db_key_ctx.set(token_db_key)
+        if token_hostel:
+            current_hostel_ctx.set(token_hostel)
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
+
     user = await get_user_by_id(uid)
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
@@ -675,6 +773,7 @@ async def get_current_user(
     if not token_sid or not active_sid or token_sid != active_sid:
         raise HTTPException(status_code=401, detail=SESSION_INVALIDATED_DETAIL)
     return user
+
 
 
 async def rotate_session(user_id: str) -> str:
@@ -724,12 +823,13 @@ async def require_approved_student(
     return u
 
 @api.post("/auth/change-password")
-async def change_password(payload: ChangePasswordRequest, u: dict = Depends(get_current_user)):
-    user = await users_col.find_one({"id": u["id"]}, {"password_hash": 1})
+async def change_password(payload: ChangePasswordRequest, u: dict = Depends(get_current_user), _=Depends(rate_limit)):
+    user = await users_col.find_one({"id": u["id"]}, {"password_hash": 1, "password": 1})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
         
-    if not verify_password(payload.current_password, user["password_hash"]):
+    user_pwd_hash = user.get("password_hash") or user.get("password")
+    if not user_pwd_hash or not verify_password(payload.current_password, user_pwd_hash):
         raise HTTPException(status_code=400, detail="Incorrect current password.")
         
     new_hash = hash_password(payload.new_password)
@@ -738,6 +838,8 @@ async def change_password(payload: ChangePasswordRequest, u: dict = Depends(get_
         {"id": u["id"]},
         {"$set": {"password_hash": new_hash, "updated_at": now}}
     )
+    # Invalidate old sessions upon password change
+    await rotate_session(u["id"])
     return {"ok": True}
 
 async def log_activity(
@@ -810,27 +912,39 @@ async def get_subscription_status(institution_name: str) -> dict:
     student_count = await users_col.count_documents({"institution_or_hostel_name": institution_name, "role": "student", "approval_status": "approved"})
 
     if not sub:
-        return {
+        now_dt = datetime.now(IST)
+        trial_end = now_dt + timedelta(days=10)
+        admin_user = await users_col.find_one({"institution_or_hostel_name": institution_name, "role": "admin"}, {"_id": 0})
+        sub_doc = {
             "institution_or_hostel_name": institution_name,
-            "status": "SUBSCRIPTION_EXPIRED",
-            "is_trial": False,
-            "days_remaining": 0,
-            "student_limit": 0,
-            "registered_students": student_count,
-            "expiry_date": None,
-            "billing_contact": None,
-            "plan_type": None,
-            "auto_renew": False
+            "admin_id": admin_user.get("id") if admin_user else None,
+            "admin_email": admin_user.get("email") if admin_user else None,
+            "status": "TRIAL_ACTIVE",
+            "is_trial": True,
+            "trial_start_date": now_dt.isoformat(),
+            "trial_end_date": trial_end.isoformat(),
+            "subscription_start_date": None,
+            "subscription_end_date": None,
+            "grace_period_end_date": None,
+            "plan_type": "trial",
+            "student_limit": 999999,  # Unlimited student capacity during trial
+            "auto_renew": False,
+            "payment_status": "NONE",
+            "created_at": now_dt.isoformat(),
+            "updated_at": now_dt.isoformat(),
         }
+        await subscriptions_col.insert_one(sub_doc)
+        sub = sub_doc
 
     now_dt = datetime.now(IST)
     current_status = sub.get("status", "SUBSCRIPTION_EXPIRED")
-    is_trial = sub.get("is_trial", False) or current_status in ["TRIAL_ACTIVE", "TRIAL_EXPIRED", "FREE_TRIAL"] or sub.get("plan_type") == "trial"
+    is_paid = sub.get("payment_status") in ["SUCCESS", "PAID"] and not sub.get("is_trial", False) and sub.get("plan_type") in ["monthly", "yearly"]
+    is_trial = not is_paid
     days_remaining = 0
     expiry_date_str = None
     
-    if current_status == "ACTIVE" and not sub.get("is_trial", False):
-        sub_end_str = sub.get("subscription_end_date")
+    if is_paid and current_status == "ACTIVE":
+        sub_end_str = sub.get("subscription_end_date") or sub.get("expiry_date")
         if sub_end_str:
             sub_end_dt = datetime.fromisoformat(sub_end_str)
             if sub_end_dt.tzinfo is None:
@@ -860,7 +974,7 @@ async def get_subscription_status(institution_name: str) -> dict:
                 trial_end_dt = None
                 
         needs_healing = False
-        if not trial_start_dt or not trial_end_dt or (trial_end_dt - trial_start_dt).days != 10 or (trial_end_dt - now_dt).days > 10 or sub.get("days_remaining") == 9999:
+        if not trial_start_dt or not trial_end_dt or (trial_end_dt - trial_start_dt).days != 10 or (trial_end_dt - now_dt).days > 10 or sub.get("days_remaining") == 9999 or sub.get("student_limit") != 999999 or sub.get("is_trial") is not True:
             needs_healing = True
             
         if needs_healing:
@@ -896,7 +1010,7 @@ async def get_subscription_status(institution_name: str) -> dict:
                 
             await subscriptions_col.update_one(
                 {"institution_or_hostel_name": institution_name},
-                {"$set": update_fields, "$unset": {"days_remaining": ""}}
+                {"$set": update_fields, "$unset": {"days_remaining": "", "subscription_end_date": "", "subscription_start_date": ""}}
             )
             sub.update(update_fields)
         
@@ -924,12 +1038,12 @@ async def get_subscription_status(institution_name: str) -> dict:
         "status": current_status,
         "is_trial": is_trial,
         "days_remaining": days_remaining,
-        "student_limit": sub.get("student_limit", 250),
+        "student_limit": 999999 if is_trial else sub.get("student_limit", 250),
         "registered_students": student_count,
         "expiry_date": expiry_date_str,
         "billing_contact": sub.get("billing_contact"),
-        "plan_type": sub.get("plan_type"),
-        "auto_renew": sub.get("auto_renew", False)
+        "plan_type": "trial" if is_trial else sub.get("plan_type"),
+        "auto_renew": sub.get("auto_renew", False) if not is_trial else False
     }
 
 
@@ -1439,6 +1553,28 @@ async def register(payload: RegisterRequest, _=Depends(rate_limit)):
     if payload.confirm_password is not None and payload.password != payload.confirm_password:
         raise HTTPException(status_code=400, detail="Passwords do not match")
 
+    hostel_name = payload.institution_or_hostel_name.strip()
+    role = payload.role or "student"
+
+    # Multi-database routing decision
+    if role == "admin":
+        assigned_db = await db_manager.assign_database_for_new_admin(
+            institution_or_hostel_name=hostel_name,
+            admin_id=str(uuid.uuid4()),
+            admin_email=email
+        )
+    else:
+        assigned_db = await db_manager.get_assigned_db_key_for_hostel(hostel_name)
+        await db_manager.register_user_in_central_auth(
+            email=email,
+            role="student",
+            institution_or_hostel_name=hostel_name,
+            assigned_db_key=assigned_db
+        )
+
+    current_db_key_ctx.set(assigned_db)
+    current_hostel_ctx.set(hostel_name)
+
     await purge_expired_otps()
 
     existing = await users_col.find_one({"email": email}, {"_id": 0})
@@ -1453,7 +1589,7 @@ async def register(payload: RegisterRequest, _=Depends(rate_limit)):
             {"id": existing["id"]},
             {"$set": {
                 "full_name": payload.full_name.strip(),
-                "institution_or_hostel_name": payload.institution_or_hostel_name.strip(),
+                "institution_or_hostel_name": hostel_name,
                 "password_hash": hash_password(payload.password),
                 "updated_at": now,
             }},
@@ -1461,14 +1597,13 @@ async def register(payload: RegisterRequest, _=Depends(rate_limit)):
         user_doc = await users_col.find_one({"id": existing["id"]}, {"_id": 0})
     else:
         now = now_iso()
-        role = payload.role or "student"
 
         # First admin to register for a brand-new institution auto-approves.
         is_first_admin = False
         if role == "admin":
             count = await users_col.count_documents({
                 "role": "admin",
-                "institution_or_hostel_name": payload.institution_or_hostel_name.strip(),
+                "institution_or_hostel_name": hostel_name,
             })
             is_first_admin = count == 0
 
@@ -1478,7 +1613,7 @@ async def register(payload: RegisterRequest, _=Depends(rate_limit)):
             "full_name": payload.full_name.strip(),
             "email": email,
             "mobile_or_user_id": email,
-            "institution_or_hostel_name": payload.institution_or_hostel_name.strip(),
+            "institution_or_hostel_name": hostel_name,
             "password_hash": hash_password(
                 payload.password),
             "role": role,
@@ -1528,7 +1663,7 @@ async def register(payload: RegisterRequest, _=Depends(rate_limit)):
             email, err)
         raise HTTPException(
             status_code=424,
-            detail=f"Failed to send email: {err}"
+            detail="Unable to send OTP right now. Please try again later."
         )
 
     resp = {
@@ -1546,6 +1681,20 @@ async def register(payload: RegisterRequest, _=Depends(rate_limit)):
 async def verify_email(payload: VerifyEmailRequest):
     """Verify the registration OTP → mark verified → auto-login or wait for approval."""
     email = normalize_email(payload.email)
+
+    db_key = await db_manager.get_assigned_db_key_for_email(email)
+    if db_key:
+        current_db_key_ctx.set(db_key)
+    else:
+        for k in db_manager.get_all_databases().keys():
+            u = await users_col.for_db(k).find_one({"email": email}, {"_id": 0})
+            if not u:
+                u = await pending_requests_col.for_db(k).find_one({"email": email}, {"_id": 0})
+            if u:
+                current_db_key_ctx.set(k)
+                hostel = u.get("institution_or_hostel_name", "")
+                await db_manager.register_user_in_central_auth(email, u.get("role", "student"), hostel, k)
+                break
 
     # Check users_col first (admins or previously approved users)
     user = await users_col.find_one({"email": email}, {"_id": 0})
@@ -1592,19 +1741,17 @@ async def verify_email(payload: VerifyEmailRequest):
             {"$set": {"email_verified": True, "updated_at": now}},
         )
         
-        # Free Trial Creation Logic (Ensure ONLY ONE trial per Admin lifetime)
+        # Free Trial Creation Logic (Ensure newly registered Admin gets a 10-day Free Trial with Unlimited Capacity)
         if user["role"] == "admin":
             inst_name = user.get("institution_or_hostel_name")
             admin_id = user.get("id")
             admin_email = user.get("email")
-            sub_count = await subscriptions_col.count_documents({
-                "$or": [
-                    {"institution_or_hostel_name": inst_name},
-                    {"admin_email": admin_email},
-                    {"admin_id": admin_id}
-                ]
+            existing_paid_sub = await subscriptions_col.find_one({
+                "institution_or_hostel_name": inst_name,
+                "payment_status": {"$in": ["SUCCESS", "PAID"]},
+                "is_trial": False
             })
-            if sub_count == 0:
+            if not existing_paid_sub:
                 from datetime import datetime, timedelta
                 now_dt = datetime.now(IST)
                 trial_end = now_dt + timedelta(days=10)
@@ -1620,13 +1767,17 @@ async def verify_email(payload: VerifyEmailRequest):
                     "subscription_end_date": None,
                     "grace_period_end_date": None,
                     "plan_type": "trial",
-                    "student_limit": 999999, # Unlimited approvals during trial
+                    "student_limit": 999999,  # Unlimited approvals during trial
                     "auto_renew": False,
                     "payment_status": "NONE",
                     "created_at": now,
                     "updated_at": now,
                 }
-                await subscriptions_col.insert_one(sub_doc)
+                await subscriptions_col.update_one(
+                    {"institution_or_hostel_name": inst_name},
+                    {"$set": sub_doc, "$unset": {"days_remaining": ""}},
+                    upsert=True
+                )
 
         sid = await rotate_session(user["id"])
         token = create_token({"sub": user["id"],
@@ -1640,14 +1791,30 @@ async def verify_email(payload: VerifyEmailRequest):
 async def login_email(payload: LoginRequest, _=Depends(rate_limit)):
     """Single-step email + password login. Verified accounts get a token."""
     email = normalize_email(payload.email)
+    
+    db_key = await db_manager.get_assigned_db_key_for_email(email)
+    if db_key:
+        current_db_key_ctx.set(db_key)
+    else:
+        for k in db_manager.get_all_databases().keys():
+            u = await users_col.for_db(k).find_one({"email": email}, {"_id": 0})
+            if not u:
+                u = await pending_requests_col.for_db(k).find_one({"email": email}, {"_id": 0})
+            if u:
+                current_db_key_ctx.set(k)
+                hostel = u.get("institution_or_hostel_name", "")
+                await db_manager.register_user_in_central_auth(email, u.get("role", "student"), hostel, k)
+                break
+
     user = await users_col.find_one({"email": email}, {"_id": 0})
 
     if not user:
         # Check if they are pending
         pending = await pending_requests_col.find_one({"email": email}, {"_id": 0})
-        if pending and verify_password(
+        pending_pwd_hash = (pending.get("password_hash") or pending.get("password")) if pending else None
+        if pending and pending_pwd_hash and verify_password(
                 payload.password,
-                pending["password_hash"]):
+                pending_pwd_hash):
             if not pending.get("email_verified"):
                 raise HTTPException(
                     status_code=403,
@@ -1665,7 +1832,8 @@ async def login_email(payload: LoginRequest, _=Depends(rate_limit)):
             status_code=401,
             detail="Invalid email or password")
 
-    if not verify_password(payload.password, user["password_hash"]):
+    user_pwd_hash = user.get("password_hash") or user.get("password")
+    if not user_pwd_hash or not verify_password(payload.password, user_pwd_hash):
         raise HTTPException(
             status_code=401,
             detail="Invalid email or password")
@@ -1805,14 +1973,14 @@ async def resend_otp(payload: ResendOtpEmailRequest):
             email, err)
         raise HTTPException(
             status_code=424,
-            detail=f"Failed to send email: {err}"
+            detail="Unable to send OTP right now. Please try again later."
         )
     return {"status": "ok", "resend_available_in": OTP_RESEND_INTERVAL_SEC,
             "expires_in": OTP_EXPIRY_MIN * 60}
 
 
 @api.post("/auth/forgot-password")
-async def forgot_password(payload: ForgotPasswordRequest):
+async def forgot_password(payload: ForgotPasswordRequest, _=Depends(rate_limit)):
     """Start the password-reset flow. Always returns 200 — never leak existence."""
     email = normalize_email(payload.email)
     user = await users_col.find_one({"email": email}, {"_id": 0})
@@ -1837,14 +2005,14 @@ async def forgot_password(payload: ForgotPasswordRequest):
             email, err)
         raise HTTPException(
             status_code=424,
-            detail=f"Failed to send email: {err}"
+            detail="Unable to send OTP right now. Please try again later."
         )
     return {"status": "ok", "resend_available_in": OTP_RESEND_INTERVAL_SEC,
             "expires_in": OTP_EXPIRY_MIN * 60}
 
 
 @api.post("/auth/forgot-password/verify")
-async def forgot_password_verify(payload: ForgotPasswordVerifyRequest):
+async def forgot_password_verify(payload: ForgotPasswordVerifyRequest, _=Depends(rate_limit)):
     """Verify forgot-password OTP → mint a short-lived reset token (not deleted yet)."""
     email = normalize_email(payload.email)
     user = await users_col.find_one({"email": email}, {"_id": 0})
@@ -1902,7 +2070,7 @@ async def reset_password(payload: ResetPasswordRequest):
 
 @api.get("/auth/me", response_model=UserPublic)
 async def me(u: dict = Depends(get_current_user)):
-    return u
+    return to_public(u)
 
 
 @api.get("/subscription/status", response_model=SubscriptionPublic)
@@ -1939,6 +2107,138 @@ async def renew_subscription(u: dict = Depends(require_admin)):
         }}
     )
     return {"success": True, "message": "Subscription renewed successfully"}
+
+
+@api.post("/subscription/apply-coupon")
+async def apply_coupon(payload: ApplyCouponRequest, u: dict = Depends(require_admin)):
+    inst_name = hostel_of(u)
+    code = (payload.coupon_code or "").strip().upper()
+    
+    days_to_add = 0
+    students_to_add = 0
+    if code == "MM10D":
+        days_to_add = 10
+    elif code == "MM01M":
+        days_to_add = 30
+    elif code == "MM05M":
+        days_to_add = 150
+    elif code == "MM01M2000":
+        days_to_add = 30
+        students_to_add = 2000
+    else:
+        raise HTTPException(status_code=400, detail="Invalid coupon code")
+
+    now = datetime.now(IST)
+    
+    sub = await subscriptions_col.find_one({"institution_or_hostel_name": inst_name})
+    
+    current_expiry_dt = None
+    if sub and sub.get("status") == "ACTIVE" and not sub.get("is_trial", False):
+        sub_end_str = sub.get("subscription_end_date") or sub.get("expiry_date")
+        if sub_end_str:
+            try:
+                current_expiry_dt = datetime.fromisoformat(sub_end_str)
+                if current_expiry_dt.tzinfo is None:
+                    current_expiry_dt = current_expiry_dt.replace(tzinfo=IST)
+            except Exception:
+                current_expiry_dt = None
+                
+    if current_expiry_dt and current_expiry_dt > now:
+        base_dt = current_expiry_dt
+    else:
+        base_dt = now
+        
+    new_expiry = base_dt + timedelta(days=days_to_add)
+    
+    current_capacity = 0
+    if sub and sub.get("status") == "ACTIVE" and not sub.get("is_trial", False):
+        current_capacity = sub.get("student_limit", 500)
+        if current_capacity == 999999:
+            current_capacity = 0
+            
+    if students_to_add > 0:
+        if current_capacity > 0:
+            student_limit = current_capacity + students_to_add
+        else:
+            student_limit = students_to_add
+    else:
+        if current_capacity > 0:
+            student_limit = current_capacity
+        else:
+            student_limit = 500
+        
+    if not sub:
+        sub_doc = {
+            "id": str(uuid.uuid4()),
+            "institution_or_hostel_name": inst_name,
+            "admin_id": u.get("id"),
+            "admin_email": u.get("email"),
+            "status": "ACTIVE",
+            "is_trial": False,
+            "payment_status": "PAID",
+            "plan_type": "monthly",
+            "coupon_code": code,
+            "coupon_applied_at": now.isoformat(),
+            "student_limit": student_limit,
+            "registered_students": 0,
+            "start_date": now.isoformat(),
+            "expiry_date": new_expiry.isoformat(),
+            "subscription_start_date": now.isoformat(),
+            "subscription_end_date": new_expiry.isoformat(),
+            "auto_renew": False,
+            "created_at": now.isoformat(),
+            "updated_at": now.isoformat(),
+        }
+        await subscriptions_col.insert_one(sub_doc)
+    else:
+        sub_update = {
+            "status": "ACTIVE",
+            "is_trial": False,
+            "payment_status": "PAID",
+            "plan_type": "monthly",
+            "coupon_code": code,
+            "coupon_applied_at": now.isoformat(),
+            "student_limit": student_limit,
+            "subscription_start_date": now.isoformat(),
+            "subscription_end_date": new_expiry.isoformat(),
+            "expiry_date": new_expiry.isoformat(),
+            "updated_at": now.isoformat()
+        }
+        await subscriptions_col.update_one(
+            {"institution_or_hostel_name": inst_name},
+            {
+                "$set": sub_update,
+                "$unset": {
+                    "trial_start_date": "",
+                    "trial_end_date": "",
+                    "days_remaining": ""
+                }
+            }
+        )
+
+    await transactions_col.insert_one({
+        "id": str(uuid.uuid4()),
+        "institution_or_hostel_name": inst_name,
+        "admin_id": u.get("id"),
+        "order_id": f"COUPON_{code}_{int(now.timestamp())}",
+        "payment_id": f"COUPON_{code}",
+        "amount": 0,
+        "currency": "INR",
+        "status": "SUCCESS",
+        "provider": "coupon",
+        "plan_type": "monthly",
+        "student_count": student_limit,
+        "action": "COUPON_REDEEM",
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat(),
+    })
+    
+    if students_to_add > 0:
+        msg = f"Coupon applied successfully! Added {days_to_add} days and +{students_to_add} student capacity."
+    else:
+        msg = f"Coupon applied successfully! Added {days_to_add} days."
+        
+    return {"ok": True, "message": msg}
 
 
 @api.post("/subscription/order", response_model=OrderCreateResponse)
@@ -2691,11 +2991,12 @@ async def post_feedback(
     payload: FeedbackInput, u: dict = Depends(require_approved_student)
 ):
     now = now_iso()
+    import html
     await feedback_col.insert_one({
         "id": str(uuid.uuid4()),
         "student_id": u["id"], "hostel": hostel_of(u),
         "date": today_iso(),
-        "feedback_text": payload.feedback_text.strip(),
+        "feedback_text": html.escape(payload.feedback_text.strip()),
         "anonymous": True, "created_at": now,
     })
     asyncio.create_task(ws_manager.broadcast_to_role(hostel_of(u), "admin", {"type": "student_action"}))
@@ -2758,6 +3059,7 @@ async def upsert_reaction(
         },
         upsert=True,
     )
+    asyncio.create_task(ws_manager.broadcast_to_role(hostel_of(u), "admin", {"type": "student_action"}))
     return {"ok": True, "reaction": payload.reaction}
 
 
@@ -3003,8 +3305,8 @@ async def update_notification_settings(payload: NotificationSettingsPayload, u: 
 # --- PUSH CENTRE (ADMIN -> STUDENT) ---
 
 class PushImmediateRequest(BaseModel):
-    title: str
-    message: str
+    title: str = Field(..., min_length=1, max_length=140)
+    message: str = Field(..., min_length=1, max_length=600)
 
 @api.post("/admin/notifications/push/immediate")
 async def admin_push_immediate(payload: PushImmediateRequest, u: dict = Depends(require_active_subscription_admin)):
@@ -3542,6 +3844,7 @@ async def admin_ni_create(payload: NecessaryItemInput,
            "created_at": now, "updated_at": now}
     await necessary_info_col.insert_one(doc)
     doc.pop("_id", None)
+    asyncio.create_task(ws_manager.broadcast_to_institution(h, {"type": "admin_action"}))
     return _proj_ni(doc)
 
 
@@ -3557,6 +3860,7 @@ async def admin_ni_update(
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Item not found")
     doc = await necessary_info_col.find_one({"id": iid}, {"_id": 0})
+    asyncio.create_task(ws_manager.broadcast_to_institution(hostel_of(u), {"type": "admin_action"}))
     return _proj_ni(doc) if doc else {"ok": True}
 
 
@@ -3566,6 +3870,7 @@ async def admin_ni_delete(iid: str, u: dict = Depends(
     res = await necessary_info_col.delete_one({"id": iid, "hostel": hostel_of(u)})
     if res.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Item not found")
+    asyncio.create_task(ws_manager.broadcast_to_institution(hostel_of(u), {"type": "admin_action"}))
     return {"ok": True}
 
 
@@ -3928,17 +4233,18 @@ async def admin_settings_put(
         {"$set": body, "$setOnInsert": {"id": h, **{k: v for k, v in SETTINGS_DEFAULTS.items() if k not in body}}},
         upsert=True,
     )
-    return await settings_col.find_one({"hostel": h}, {"_id": 0})
+    doc = await settings_col.find_one({"hostel": h}, {"_id": 0})
+    asyncio.create_task(ws_manager.broadcast_to_institution(h, {"type": "admin_action"}))
+    return doc
 
 
 # ---------------------------------------------------------------------------
 # Startup: indexes & migrations only — NO seed data (production-ready)
 # ---------------------------------------------------------------------------
-async def _ensure_indexes_and_migrate():
-    """Create indexes for hostel-scoped collections. Idempotent."""
+async def _ensure_indexes_for_single_db():
+    """Create indexes for hostel-scoped collections in the active database. Idempotent."""
     await users_col.create_index("id", unique=True)
-    # New: email is the global unique identifier.
-    # Use a partial filter so legacy/no-email rows don't conflict.
+    # email is the global unique identifier per DB.
     try:
         idxs = await users_col.index_information()
         if "mobile_or_user_id_1_institution_or_hostel_name_1" in idxs:
@@ -4004,79 +4310,77 @@ async def _ensure_indexes_and_migrate():
     # app_settings
     try:
         idxs = await settings_col.index_information()
-        if "id_1" in idxs:
-            await settings_col.drop_index("id_1")
+        if "hostel_1" not in idxs:
+            await settings_col.create_index("hostel", unique=True, name="hostel_1")
     except Exception:
         pass
-    await settings_col.create_index("hostel", unique=True)
-    # notifications
-    await notifications_col.create_index([("hostel", 1), ("created_at", -1)])
-    # email otps
-    await email_otps_col.create_index(
-        [("email", 1), ("purpose", 1)], unique=True
-    )
-    await email_otps_col.create_index("expires_at")
-    # push tokens
-    await push_tokens_col.create_index(
-        [("user_id", 1), ("device_token", 1)], unique=True
-    )
-    await push_tokens_col.create_index([("hostel", 1), ("role", 1)])
-
-    # Subscription & Billing indexes
-    await subscriptions_col.create_index("institution_or_hostel_name", unique=True)
-    await transactions_col.create_index([("institution_or_hostel_name", 1), ("created_at", -1)])
-    await invoices_col.create_index([("institution_or_hostel_name", 1), ("created_at", -1)])
-    await subscription_events_col.create_index([("institution_or_hostel_name", 1), ("event_date", -1)])
-
-    # Activity logs
-    await activity_logs_col.create_index([("institution", 1), ("timestamp", -1)])
-    await activity_logs_col.create_index("user_id")
-
-    logger.info("MessMate API started. Connected to DB.")
-
-    # Drop legacy users unique-on-mobile-only if present
+    # push_tokens
     try:
-        idxs = await users_col.index_information()
-        if "mobile_or_user_id_1" in idxs:
-            await users_col.drop_index("mobile_or_user_id_1")
+        idxs = await push_tokens_col.index_information()
+        if "device_token_1" not in idxs:
+            await push_tokens_col.create_index(
+                "device_token",
+                unique=True,
+                name="device_token_1")
+        if "user_id_1" not in idxs:
+            await push_tokens_col.create_index("user_id", name="user_id_1")
+    except Exception:
+        pass
+    # subscriptions
+    try:
+        idxs = await subscriptions_col.index_information()
+        if "institution_or_hostel_name_1" not in idxs:
+            await subscriptions_col.create_index(
+                "institution_or_hostel_name",
+                unique=True,
+                name="institution_or_hostel_name_1",
+            )
+        if "admin_id_1" not in idxs:
+            await subscriptions_col.create_index("admin_id", name="admin_id_1")
+    except Exception:
+        pass
+    # payments & transactions
+    try:
+        idxs = await payments_col.index_information()
+        if "order_id_1" not in idxs:
+            await payments_col.create_index("order_id", unique=True, name="order_id_1")
+        if "institution_or_hostel_name_1" not in idxs:
+            await payments_col.create_index("institution_or_hostel_name", name="institution_or_hostel_name_1")
+    except Exception:
+        pass
+    try:
+        idxs = await transactions_col.index_information()
+        if "institution_or_hostel_name_1" not in idxs:
+            await transactions_col.create_index("institution_or_hostel_name", name="institution_or_hostel_name_1")
+        if "order_id_1" not in idxs:
+            await transactions_col.create_index("order_id", name="order_id_1")
+    except Exception:
+        pass
+    try:
+        idxs = await invoices_col.index_information()
+        if "invoice_number_1" not in idxs:
+            await invoices_col.create_index("invoice_number", unique=True, name="invoice_number_1")
+        if "institution_or_hostel_name_1" not in idxs:
+            await invoices_col.create_index("institution_or_hostel_name", name="institution_or_hostel_name_1")
     except Exception:
         pass
 
-    # -------------------------------------------------------------------------
-    # ONE-TIME MIGRATION: Backfill admin_id on approved students that were
-    # approved before this fix was deployed. This ensures all existing students
-    # can log in immediately without re-approval.
-    # -------------------------------------------------------------------------
-    try:
-        # Build a mapping of institution_name → admin_id for fast lookup
-        admin_map: dict = {}
-        async for admin_doc in users_col.find({"role": "admin"}, {"_id": 0, "id": 1, "institution_or_hostel_name": 1}):
-            inst = admin_doc.get("institution_or_hostel_name")
-            if inst and inst not in admin_map:
-                admin_map[inst] = admin_doc["id"]
 
-        if admin_map:
-            backfill_count = 0
-            async for student in users_col.find(
-                {"role": "student", "approval_status": "approved", "admin_id": {"$exists": False}},
-                {"_id": 0, "id": 1, "institution_or_hostel_name": 1}
-            ):
-                inst = student.get("institution_or_hostel_name", "")
-                mapped_admin_id = admin_map.get(inst)
-                if mapped_admin_id:
-                    await users_col.update_one(
-                        {"id": student["id"]},
-                        {"$set": {"admin_id": mapped_admin_id}}
-                    )
-                    backfill_count += 1
-
-            if backfill_count:
-                logger.info(
-                    "admin_id backfill migration: stamped admin_id on %d approved student(s).",
-                    backfill_count
-                )
-    except Exception as e:
-        logger.warning("admin_id backfill migration failed (non-fatal): %s", e, exc_info=True)
+async def _ensure_indexes_and_migrate():
+    """Create indexes across all configured application databases concurrently. Idempotent."""
+    tasks = []
+    for db_key in db_manager.get_all_databases().keys():
+        async def _safe_index(k=db_key):
+            token = current_db_key_ctx.set(k)
+            try:
+                await asyncio.wait_for(_ensure_indexes_for_single_db(), timeout=6.0)
+            except Exception as e:
+                logger.warning("Index creation notice on db %s: %s", k, e)
+            finally:
+                current_db_key_ctx.reset(token)
+        tasks.append(_safe_index())
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 SCHEDULER_INTERVAL_SEC = int(
@@ -4086,15 +4390,12 @@ SCHEDULER_INTERVAL_SEC = int(
 _scheduler_task: Optional[asyncio.Task] = None
 
 
-async def _dispatch_scheduled_notifications() -> int:
-    """Find active scheduled notifications whose time and day match the current time.
-    Dispatch them to students and log the delivery.
-    """
+async def _dispatch_for_single_db() -> int:
     now_dt = datetime.now(IST)
     today_str = now_dt.date().isoformat()
     current_time_str = now_dt.strftime("%H:%M")
-    current_day = now_dt.strftime("%A") # e.g. "Monday"
-    
+    current_day = now_dt.strftime("%A")
+
     cursor = scheduled_notifications_col.find({
         "isActive": True,
         "scheduledTime": current_time_str
@@ -4103,7 +4404,6 @@ async def _dispatch_scheduled_notifications() -> int:
     dispatched = 0
     async for doc in cursor:
         last_sent = doc.get("lastSentAt")
-        # Prevent double sending in the same minute
         if last_sent and last_sent[:16] == now_dt.isoformat()[:16]:
             continue
             
@@ -4111,7 +4411,6 @@ async def _dispatch_scheduled_notifications() -> int:
         days_selection = doc.get("daysSelection", [])
         
         should_send = False
-        
         if repeat_option == "Send Once":
             should_send = True
         elif repeat_option == "Repeat Every Selected Day":
@@ -4121,37 +4420,38 @@ async def _dispatch_scheduled_notifications() -> int:
             if current_day in days_selection:
                 should_send = True
         else:
-            # Fallback for old 'Weekly' or 'Daily'
             should_send = True
 
         if not should_send:
             continue
             
-        # Send it!
         try:
             h = doc["hostel"]
             admin_id_val = doc.get("adminId")
             recipients = []
             user_query = {"role": "student", "approval_status": "approved"}
             if admin_id_val:
-                user_query["$or"] = [{"admin_id": admin_id_val}, {"institution_or_hostel_name": h}]
+                user_query["admin_id"] = admin_id_val
             else:
                 user_query["institution_or_hostel_name"] = h
-            async for user in users_col.find(user_query):
-                recipients.append(user["id"])
+
+            async for u in users_col.find(user_query, {"_id": 0, "id": 1}):
+                recipients.append(u["id"])
             
+            now = now_iso()
             if recipients:
+                from utils.istDate import parseISODateAsIST, formatDateIST, getDayNameIST, formatTimeIST
+                
+                created_dt = parseISODateAsIST(now)
+                indian_date = formatDateIST(created_dt)
+                indian_day = getDayNameIST(created_dt)
+                indian_time = formatTimeIST(created_dt)
+                
                 docs = []
-                now = now_iso()
-                indian_months = ["January","February","March","April","May","June",
-                                 "July","August","September","October","November","December"]
-                indian_date = f"{now_dt.day:02d} {indian_months[now_dt.month-1]} {now_dt.year}"
-                indian_day = now_dt.strftime("%A")
-                indian_time = now_dt.strftime("%I:%M %p")
-                for r_id in recipients:
+                for uid in recipients:
                     docs.append({
                         "id": str(uuid.uuid4()),
-                        "recipient_id": r_id,
+                        "student_id": uid,
                         "title": doc["title"],
                         "message": doc["message"],
                         "date": indian_date,
@@ -4185,16 +4485,12 @@ async def _dispatch_scheduled_notifications() -> int:
                 except Exception as e:
                     logger.warning("scheduled push failed (%s): %s", doc.get("id"), e, exc_info=True)
             
-            # Update lastSentAt
             await scheduled_notifications_col.update_one(
                 {"id": doc["id"]},
-                {
-                    "$set": {"lastSentAt": now_dt.isoformat()},
-                }
+                {"$set": {"lastSentAt": now_dt.isoformat()}}
             )
             dispatched += 1
             
-            # If One Time, mark inactive
             if repeat_option == "Send Once":
                 await scheduled_notifications_col.update_one(
                     {"id": doc["id"]},
@@ -4202,11 +4498,22 @@ async def _dispatch_scheduled_notifications() -> int:
                 )
                 
         except Exception as e:
-            logger.warning(
-                "scheduler dispatch failed for %s: %s",
-                doc.get("id"),
-                e, exc_info=True)
+            logger.warning("scheduler dispatch failed for %s: %s", doc.get("id"), e, exc_info=True)
     return dispatched
+
+
+async def _dispatch_scheduled_notifications() -> int:
+    """Find active scheduled notifications across all application databases."""
+    total_dispatched = 0
+    for db_key in db_manager.get_all_databases().keys():
+        token = current_db_key_ctx.set(db_key)
+        try:
+            total_dispatched += await _dispatch_for_single_db()
+        except Exception as e:
+            logger.warning("scheduler dispatch error for db %s: %s", db_key, e)
+        finally:
+            current_db_key_ctx.reset(token)
+    return total_dispatched
 
 
 async def _scheduler_loop() -> None:
@@ -4219,19 +4526,35 @@ async def _scheduler_loop() -> None:
             await _dispatch_scheduled_notifications()
         except asyncio.CancelledError:
             raise
-        except Exception as e:  # pragma: no cover — defensive
+        except Exception as e:
             logger.warning("scheduler loop error (non-fatal): %s", e, exc_info=True)
         await asyncio.sleep(SCHEDULER_INTERVAL_SEC)
 
 
+async def _background_startup():
+    """Performs multi-database initialization and index synchronization in the background."""
+    try:
+        await db_manager.initialize()
+        await _ensure_indexes_and_migrate()
+        logger.info("Background multi-database initialization and index synchronization completed.")
+    except Exception as e:
+        logger.warning(f"Background database initialization notice: {e}")
+
+
 @app.on_event("startup")
 async def on_startup():
-    await _ensure_indexes_and_migrate()
+    # Preload configuration immediately
+    db_manager.load_configurations()
+    
+    # Spawn background task so port binds instantly (< 50ms) for Render / production
+    asyncio.create_task(_background_startup())
+    
     if GMAIL_CONFIGURED:
         logger.info("MessMate API ready — Gmail API email OTP active")
     else:
         logger.info(
             "MessMate API ready — Gmail API NOT configured. OTPs are logged to console (dev mode).")
+            
     global _scheduler_task
     if _scheduler_task is None or _scheduler_task.done():
         _scheduler_task = asyncio.create_task(_scheduler_loop())

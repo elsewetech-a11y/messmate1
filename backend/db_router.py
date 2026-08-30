@@ -144,7 +144,7 @@ class MultiDatabaseManager:
         if self._configs:
             return
         primary_mongo_url = os.getenv("MONGO_URL", "mongodb://127.0.0.1:27017")
-        primary_db_name = os.getenv("DB_NAME", "messmate")
+        primary_db_name = os.getenv("DB_NAME", os.getenv("DATABASE_1_NAME", "MessMate"))
 
         # Database 1 (Primary / Default)
         db1_uri = os.getenv("DATABASE_1_URI", primary_mongo_url)
@@ -198,14 +198,24 @@ class MultiDatabaseManager:
         self.load_configurations()
 
         for key, cfg in self._configs.items():
-            if key not in self._databases:
+            try:
+                client = self._clients.get(key) or create_motor_client(cfg.uri)
+                self._clients[key] = client
+                
+                target_name = cfg.db_name
                 try:
-                    client = create_motor_client(cfg.uri)
-                    self._clients[key] = client
-                    self._databases[key] = client[cfg.db_name]
-                    logger.info(f"Connected to database '{key}' ({cfg.name}) at {cfg.db_name}")
-                except Exception as e:
-                    logger.warning(f"Connecting to database '{key}' notice: {e}")
+                    dbs = await client.list_database_names()
+                    for d in dbs:
+                        if d.lower() == cfg.db_name.lower():
+                            target_name = d
+                            break
+                except Exception:
+                    pass
+                
+                self._databases[key] = client[target_name]
+                logger.info(f"Connected to database '{key}' ({cfg.name}) at {target_name}")
+            except Exception as e:
+                logger.warning(f"Connecting to database '{key}' notice: {e}")
 
         self._initialized = True
 

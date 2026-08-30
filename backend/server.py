@@ -178,14 +178,36 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 app = FastAPI(title="MessMate API")
 
 import logging
+from pymongo.errors import PyMongoError, ServerSelectionTimeoutError
 logger = logging.getLogger(__name__)
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+        headers=exc.headers,
+    )
+
+@app.exception_handler(PyMongoError)
+async def mongo_exception_handler(request: Request, exc: PyMongoError):
+    logger.error(f"MongoDB Error on {request.method} {request.url.path}: {exc}", exc_info=True)
+    if isinstance(exc, ServerSelectionTimeoutError):
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Database connection timeout. Please check MongoDB Atlas Network Access (allow 0.0.0.0/0)."}
+        )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Database operation error: {str(exc)}"}
+    )
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    logger.error(f"Unhandled exception on {request.method} {request.url.path}: {exc}", exc_info=True)
     return JSONResponse(
         status_code=500,
-        content={"detail": "Internal Server Error"}
+        content={"detail": f"Internal Server Error: {str(exc)}"}
     )
 
 app.add_middleware(SecurityHeadersMiddleware)

@@ -5,6 +5,7 @@ import { useRouter } from "expo-router";
 import React, { useMemo, useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
+  DeviceEventEmitter,
   Linking,
   ScrollView,
   StyleSheet,
@@ -63,6 +64,13 @@ export default function AdminSettings() {
 
   useEffect(() => {
     load();
+  }, [load]);
+
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener("REALTIME_EVENT", (msg) => {
+      if (msg.type === "admin_action") load();
+    });
+    return () => sub.remove();
   }, [load]);
 
   const update = async (patch: Partial<AppSettings>, key: string) => {

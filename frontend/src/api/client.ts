@@ -2,18 +2,37 @@
 
 import { Platform } from 'react-native';
 
-let BASE_URL = process.env.EXPO_PUBLIC_BACKEND_URL || "http://127.0.0.1:8000";
+export const CANDIDATE_URLS: string[] = [
+  (process.env.EXPO_PUBLIC_BACKEND_URL || "").trim(),
+  "https://messmate1-backend.onrender.com",
+  ...(__DEV__ && Platform.OS === "android" ? ["http://10.0.2.2:8000", "http://127.0.0.1:8000"] : []),
+].filter(Boolean).filter(u => !u.includes("trycloudflare.com")).map(u => u.replace(/\/api\/?$/i, "").replace(/\/+$/, ""));
 
-if (__DEV__ && Platform.OS === 'android') {
-  if (BASE_URL.includes('localhost')) {
-    BASE_URL = BASE_URL.replace('localhost', '10.0.2.2');
-  } else if (BASE_URL.includes('127.0.0.1')) {
-    BASE_URL = BASE_URL.replace('127.0.0.1', '10.0.2.2');
+function getInitialBaseUrl(): string {
+  let rawUrl = (process.env.EXPO_PUBLIC_BACKEND_URL || "").trim();
+  if (!rawUrl || rawUrl.includes("trycloudflare.com")) {
+    rawUrl = "https://messmate1-backend.onrender.com";
   }
+  rawUrl = rawUrl.replace(/\/api\/?$/i, "").replace(/\/+$/, "");
+
+  if (__DEV__ && Platform.OS === "android") {
+    if (rawUrl.includes("localhost")) {
+      rawUrl = rawUrl.replace("localhost", "10.0.2.2");
+    } else if (rawUrl.includes("127.0.0.1")) {
+      rawUrl = rawUrl.replace("127.0.0.1", "10.0.2.2");
+    }
+  }
+  return rawUrl;
 }
 
-if (!BASE_URL) {
-  console.warn("EXPO_PUBLIC_BACKEND_URL is not defined");
+let BASE_URL = getInitialBaseUrl();
+
+export function setApiBaseUrl(url: string) {
+  BASE_URL = url.trim().replace(/\/+$/, "");
+}
+
+export function getApiBaseUrl(): string {
+  return BASE_URL;
 }
 
 export type ApprovalStatus = "pending" | "approved" | "blocked";
@@ -126,6 +145,13 @@ export type InvoicePublic = {
   payment_date: string;
 };
 
+export type TokenResponse = {
+  access_token: string;
+  refresh_token?: string;
+  token_type: string;
+  user: User;
+};
+
 export type User = {
   id: string;
   full_name: string;
@@ -141,13 +167,6 @@ export type User = {
   department?: string;
   academic_year?: string;
   roll_number?: string;
-};
-
-export type TokenResponse = {
-  access_token: string;
-  token_type: string;
-  refresh_token?: string;
-  user: User;
 };
 
 export type CustomQuestion = { text: string; options: string[] } | null;
@@ -168,6 +187,8 @@ export type DailyMenu = {
   lunch_custom_question: CustomQuestion;
   dinner_custom_question: CustomQuestion;
 };
+
+export type DayMenu = DailyMenu;
 
 export type WeeklyDay = DailyMenu & {
   reactions: { breakfast: Reaction; lunch: Reaction; dinner: Reaction };
@@ -284,6 +305,39 @@ export type DashboardResponse = {
   };
 };
 
+export type MealSummary = {
+  on_count: number;
+  off_count: number;
+  no_response_count: number;
+  items: {
+    item_name: string;
+    planned_qty: number;
+    suggested_qty: number;
+    buffer_pct: number;
+    unit: Unit;
+  }[];
+};
+
+export type AdminStudent = {
+  id: string;
+  full_name: string;
+  email: string;
+  mobile_or_user_id?: string;
+  institution_or_hostel_name: string;
+  role: Role;
+  approval_status: ApprovalStatus;
+  room_number?: string | null;
+  department?: string | null;
+  academic_year?: string | null;
+  roll_number?: string | null;
+  created_at?: string;
+  plan_today?: {
+    breakfast?: Partial<MealPlan> | null;
+    lunch?: Partial<MealPlan> | null;
+    dinner?: Partial<MealPlan> | null;
+  } | null;
+};
+
 export type NecessaryItem = {
   id: string;
   item_name: string;
@@ -321,9 +375,8 @@ export type AdminWastageToday = {
   saved_amount_vs_avg: number | null;
 };
 
-export type RecurringNotification = {
+export type ScheduledNotification = {
   id: string;
-  adminId: string;
   title: string;
   message: string;
   notificationType: "Daily" | "Weekly" | "One Time";
@@ -370,8 +423,6 @@ export class ApiError extends Error {
 }
 
 // --- Session invalidation handling ---
-// AuthContext registers a handler here that fires when the server tells us the
-// current session was superseded (user signed in on another device).
 let sessionInvalidatedHandler: ((message: string) => void) | null = null;
 let sessionInvalidatedFiring = false;
 
@@ -395,7 +446,6 @@ function maybeFireSessionInvalidated(status: number, data: any) {
       "You've been signed out because this account was signed in on another device.";
     sessionInvalidatedHandler?.(msg);
   } finally {
-    // Reset shortly so a future genuine event can fire again.
     setTimeout(() => {
       sessionInvalidatedFiring = false;
     }, 1500);
@@ -404,60 +454,174 @@ function maybeFireSessionInvalidated(status: number, data: any) {
 
 async function request<T>(
   path: string,
-  options: { method?: string; body?: any; token?: string | null } = {},
+  options: {
+    method?: string;
+    body?: any;
+    token?: string | null;
+    timeoutMs?: number;
+    retries?: number;
+  } = {},
 ): Promise<T> {
-  const { method = "GET", body, token } = options;
+  const {
+    method = "GET",
+    body,
+    token,
+    timeoutMs = 25000,
+    retries = 2,
+  } = options;
+
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
-    "bypass-tunnel-reminder": "true",  // Required for localtunnel (loca.lt) to bypass reminder page
-    "ngrok-skip-browser-warning": "true", // Required for ngrok to bypass warning page
+    "bypass-tunnel-reminder": "true",
+    "ngrok-skip-browser-warning": "true",
   };
   if (token) headers.Authorization = `Bearer ${token}`;
 
   const finalPath = path.startsWith("/api") ? path : `/api${path}`;
-  const fullUrl = `${BASE_URL}${finalPath}`;
-  
-  console.log(`[API Request] ${method} ${fullUrl}`);
-  if (body) {
-    console.log(`[API Request Body]`, body);
+
+  let res: Response | null = null;
+  let activeUrl = BASE_URL;
+  let lastErr: any = null;
+
+  const isRetryable = (response: Response | null, err: any) => {
+    if (err) return true;
+    if (!response) return true;
+    return (
+      response.status === 502 ||
+      response.status === 503 ||
+      response.status === 504 ||
+      response.status === 530
+    );
+  };
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    lastErr = null;
+    res = null;
+
+    try {
+      const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+      const effectiveTimeout = attempt === 0 ? timeoutMs : Math.min(timeoutMs, 18000);
+      const timeoutId = controller ? setTimeout(() => controller.abort(), effectiveTimeout) : null;
+
+      try {
+        res = await fetch(`${activeUrl}${finalPath}`, {
+          method,
+          headers,
+          body: body ? JSON.stringify(body) : undefined,
+          signal: controller ? controller.signal : undefined,
+        });
+      } finally {
+        if (timeoutId) clearTimeout(timeoutId);
+      }
+    } catch (err: any) {
+      lastErr = err;
+      console.warn(`[API] Attempt ${attempt + 1}/${retries + 1} on ${activeUrl}${finalPath} failed:`, err?.message || err);
+    }
+
+    if (res && !isRetryable(res, null)) {
+      break;
+    }
+
+    if (attempt < retries) {
+      const backoffMs = Math.min(1000 * Math.pow(1.5, attempt), 2500);
+      console.log(`[API] Retrying ${finalPath} in ${backoffMs}ms...`);
+      await new Promise((resolve) => setTimeout(resolve, backoffMs));
+    }
   }
 
-  let res;
+  // If primary candidate failed after retries, probe other candidate URLs
+  if (!res || isRetryable(res, lastErr)) {
+    for (const candidate of CANDIDATE_URLS) {
+      if (candidate === activeUrl) continue;
+      try {
+        const cCtrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+        const cTimeout = cCtrl ? setTimeout(() => cCtrl.abort(), 6000) : null;
+        try {
+          const testRes = await fetch(`${candidate}${finalPath}`, {
+            method,
+            headers,
+            body: body ? JSON.stringify(body) : undefined,
+            signal: cCtrl ? cCtrl.signal : undefined,
+          });
+          if (testRes && (!isRetryable(testRes, null) || testRes.ok)) {
+            BASE_URL = candidate;
+            activeUrl = candidate;
+            res = testRes;
+            lastErr = null;
+            console.log(`[API] Successfully switched to active server: ${BASE_URL}`);
+            break;
+          }
+        } finally {
+          if (cTimeout) clearTimeout(cTimeout);
+        }
+      } catch {
+        // Continue to next candidate
+      }
+    }
+  }
+
+  if (!res) {
+    throw new ApiError(
+      `Unable to connect to backend server. Please check your internet connection and try again.`,
+      0,
+      null
+    );
+  }
+
+  
+  let text = "";
   try {
-    res = await fetch(fullUrl, {
-      method,
-      headers,
-      body: body ? JSON.stringify(body) : undefined,
-    });
-  } catch (error: any) {
-    console.error(`[API Error] Network error fetching ${finalPath}:`, error);
-    // Generic fallback for any network error
-    throw new ApiError(`Unable to connect. Please check your internet connection and try again.`, 0, null);
+    text = await res.text();
+  } catch (readErr) {
+    console.error(`[API Error] Failed to read response body for ${finalPath}:`, readErr);
+    throw new ApiError("Failed to read server response.", res.status || 500, null);
+  }
+
+  let data: any = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch (parseErr) {
+      console.warn(`[API Warning] Non-JSON response for ${finalPath} (Status ${res.status}):`, text.slice(0, 200));
+      data = { raw: text, message: text.length < 200 ? text : undefined };
+    }
   }
   
-  const text = await res.text();
-  const data = text ? JSON.parse(text) : null;
-  console.log(`[API Response] ${method} ${fullUrl} - Status: ${res.status}`, data);
+  console.log(`[API Response] ${method} ${activeUrl}${finalPath} - Status: ${res.status}`, data);
 
   if (!res.ok) {
-    const detail = data && (data.detail || data.message);
+    const detail = data && (data.detail || data.message || (typeof data === "string" ? data : null));
     
-    // Log the complete technical error internally for debugging
-    console.error(`[API Error] ${method} ${fullUrl} - Status: ${res.status} - Detail:`, detail);
+    console.error(`[API Error] ${method} ${activeUrl}${finalPath} - Status: ${res.status} - Detail:`, detail);
+
     
     let msg = `Something went wrong. Please try again later.`;
     
-    if (res.status === 404) {
-      msg = "The requested information could not be loaded.";
+    if (res.status === 401) {
+      msg = typeof detail === "string" ? detail : "Session expired or authentication failed. Please sign in again.";
+    } else if (res.status === 403) {
+      if (typeof detail === "string") {
+        msg = detail;
+      } else if (detail && typeof detail === "object" && detail.message) {
+        msg = detail.message;
+      } else {
+        msg = "Access restricted. You do not have permission for this action.";
+      }
+    } else if (res.status === 404) {
+      msg = "The requested information could not be found.";
+    } else if (res.status === 408 || res.status === 504) {
+      msg = "Server gateway timed out. Please try again.";
     } else if (res.status === 422) {
-      // Parse FastAPI Pydantic validation errors
       if (Array.isArray(detail)) {
-        msg = detail.map((e: any) => e.msg).join(", ");
+        msg = detail.map((e: any) => e.msg || e.message || JSON.stringify(e)).join(", ");
+      } else if (typeof detail === "string") {
+        msg = detail;
       } else {
         msg = "Invalid input provided. Please check your data and try again.";
       }
+    } else if (res.status === 502 || res.status === 503) {
+      msg = "Backend server is currently unavailable. Please check the server status.";
     } else if (res.status >= 400 && res.status < 500) {
-      // Standard 4xx errors usually contain business logic messages we want to show
       if (typeof detail === "string") {
         msg = detail;
       } else if (detail && typeof detail === "object" && detail.message) {
@@ -466,13 +630,11 @@ async function request<T>(
         msg = "Unable to complete your request at this time.";
       }
     } else if (res.status >= 500) {
-      // 500 errors should always be masked
-      msg = "Something went wrong. Please try again later.";
-    }
-    
-    // Check for expired token (401)
-    if (res.status === 401 && typeof detail === "string" && detail.toLowerCase().includes("expired")) {
-        // AuthContext handles redirect
+      if (typeof detail === "string" && !detail.toLowerCase().includes("traceback")) {
+        msg = detail;
+      } else {
+        msg = "Internal server error occurred. Please try again later.";
+      }
     }
     
     maybeFireSessionInvalidated(res.status, data);
@@ -482,6 +644,24 @@ async function request<T>(
 }
 
 export const api = {
+  get: <T>(path: string, options: { token?: string | null; headers?: Record<string, string> } = {}): Promise<T> => {
+    const token = options?.token || (options?.headers?.Authorization?.replace(/^Bearer\s+/i, ""));
+    return request<T>(path, { method: "GET", token });
+  },
+  post: <T>(path: string, body?: any, options: { token?: string | null; headers?: Record<string, string> } = {}): Promise<T> => {
+    const token = options?.token || (options?.headers?.Authorization?.replace(/^Bearer\s+/i, ""));
+    return request<T>(path, { method: "POST", body, token });
+  },
+  put: <T>(path: string, body?: any, options: { token?: string | null; headers?: Record<string, string> } = {}): Promise<T> => {
+    const token = options?.token || (options?.headers?.Authorization?.replace(/^Bearer\s+/i, ""));
+    return request<T>(path, { method: "PUT", body, token });
+  },
+  delete: <T>(path: string, options: { token?: string | null; headers?: Record<string, string> } = {}): Promise<T> => {
+    const token = options?.token || (options?.headers?.Authorization?.replace(/^Bearer\s+/i, ""));
+    return request<T>(path, { method: "DELETE", token });
+  },
+  applyCoupon: (token: string, payload: { coupon_code: string }): Promise<{ ok: boolean; message: string }> =>
+    request("/api/subscription/apply-coupon", { token, method: "POST", body: payload }),
   refreshToken: (payload: { refresh_token: string }): Promise<TokenResponse> => request("/api/auth/refresh", { method: "POST", body: payload }),
   getSubscriptionStatus: (token: string): Promise<SubscriptionPublic> => request("/api/subscription/status", { token }),
   getStudentSubscriptionStatus: (token: string): Promise<SubscriptionPublic> => request("/api/student/subscription/status", { token }),
@@ -854,3 +1034,6 @@ export const api = {
       token,
     }),
 };
+
+export const client = api;
+export default api;

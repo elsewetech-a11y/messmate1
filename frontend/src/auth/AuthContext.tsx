@@ -40,34 +40,65 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
+  const logout = useCallback(async () => {
+    await storage.secureRemove(TOKEN_KEY);
+    await storage.secureRemove("messmate.refresh");
+    await storage.removeItem(USER_KEY);
+    setToken(null);
+    setUser(null);
+  }, []);
+
   useEffect(() => {
     (async () => {
-      const savedToken = await storage.secureGet(TOKEN_KEY, "");
-      const savedUserRaw = await storage.getItem(USER_KEY, "");
-      if (savedToken && savedUserRaw) {
-        try {
-          const parsed = JSON.parse(savedUserRaw as string) as User;
-          setToken(savedToken as string);
-          setUser(parsed);
-          // Verify the session with the backend. If it was invalidated (another
-          // device signed in), the api client's session-invalidated handler
-          // will fire and log us out.
+      try {
+        const savedToken = await storage.secureGet(TOKEN_KEY, "");
+        const savedUserRaw = await storage.getItem(USER_KEY, "");
+        if (savedToken && savedUserRaw) {
           try {
-            const fresh = await api.me(savedToken as string);
-            setUser(fresh);
-            await storage.setItem(USER_KEY, JSON.stringify(fresh));
+            const parsed = JSON.parse(savedUserRaw as string) as User;
+            setToken(savedToken as string);
+            setUser(parsed);
+            setLoading(false);
+
+            // Verify the session in the background without blocking startup
+            api.me(savedToken as string)
+              .then(async (fresh) => {
+                setUser(fresh);
+                await storage.setItem(USER_KEY, JSON.stringify(fresh));
+              })
+              .catch(async (err: any) => {
+                if (err?.status === 401) {
+                  const refreshToken = await storage.secureGet("messmate.refresh", "");
+                  if (refreshToken) {
+                    try {
+                      const resp = await api.refreshToken({ refresh_token: refreshToken as string });
+                      await storage.secureSet(TOKEN_KEY, resp.access_token);
+                      if (resp.refresh_token) {
+                        await storage.secureSet("messmate.refresh", resp.refresh_token);
+                      }
+                      await storage.setItem(USER_KEY, JSON.stringify(resp.user));
+                      setToken(resp.access_token);
+                      setUser(resp.user);
+                    } catch {
+                      await logout();
+                    }
+                  } else {
+                    await logout();
+                  }
+                }
+              });
+            return;
           } catch {
-            // ignore — handler above will log out if session_invalidated
+            await logout();
           }
-        } catch {
-          await storage.secureRemove(TOKEN_KEY);
-          await storage.secureRemove("messmate.refresh");
-          await storage.removeItem(USER_KEY);
         }
+      } catch {
+        // storage read error
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     })();
-  }, []);
+  }, [logout]);
 
   const setSession: AuthContextValue["setSession"] = useCallback(async (resp) => {
     await storage.secureSet(TOKEN_KEY, resp.access_token);
@@ -87,14 +118,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     },
     [setSession],
   );
-
-  const logout = useCallback(async () => {
-    await storage.secureRemove(TOKEN_KEY);
-    await storage.secureRemove("messmate.refresh");
-    await storage.removeItem(USER_KEY);
-    setToken(null);
-    setUser(null);
-  }, []);
 
   // Register a handler so the API client can auto-logout when the server tells
   // us the session was superseded on another device.
@@ -167,7 +190,9 @@ export function useAuthRouting() {
         target = "/";
       }
     } else if (user.role === "admin") {
-      if (top !== "(admin)") target = "/(admin)/dashboard";
+      if (top !== "(admin)" && top !== "notifications" && top !== "notification") {
+        target = "/(admin)/dashboard";
+      }
     } else {
       // student
       if (user.approval_status === "approved") {

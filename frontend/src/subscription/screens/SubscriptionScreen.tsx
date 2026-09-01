@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from "react";
-import { StyleSheet, ScrollView, View, Text, SafeAreaView, ActivityIndicator } from "react-native";
+import { StyleSheet, ScrollView, View, Text, SafeAreaView, ActivityIndicator, TextInput, Alert } from "react-native";
 import { PRICING_CONFIG } from "../constants/pricingConfig";
 import { Feather } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
@@ -15,6 +15,7 @@ import { PlanSelector } from "../components/PlanSelector";
 import { StudentSlider } from "../components/StudentSlider";
 import { PriceSummary } from "../components/PriceSummary";
 import { SupportCard } from "../components/SupportCard";
+import { client } from "@/src/api/client";
 
 export function SubscriptionScreen() {
   const { c } = useTheme();
@@ -56,6 +57,9 @@ export function SubscriptionScreen() {
   const [paymentError, setPaymentError] = useState<string | null>(null);
 
   const [initialized, setInitialized] = useState(false);
+  const [couponCode, setCouponCode] = useState("");
+  const [couponLoading, setCouponLoading] = useState(false);
+  const [couponError, setCouponError] = useState<string | null>(null);
 
   useEffect(() => {
     if (subscription && !initialized) {
@@ -114,6 +118,34 @@ export function SubscriptionScreen() {
       setPaymentError(errMsg);
     } finally {
       setPaymentLoading(false);
+    }
+  };
+
+  const handleApplyCoupon = async () => {
+    if (!token) return;
+    const trimmed = couponCode.trim().toUpperCase();
+    if (!trimmed) {
+      setCouponError("Please enter a coupon code");
+      return;
+    }
+    
+    try {
+      setCouponLoading(true);
+      setCouponError(null);
+      
+      const res = await client.applyCoupon(token, { coupon_code: trimmed });
+      
+      if (res.ok || (res as any).success) {
+        Alert.alert("Success", res.message || "Coupon code activated successfully!");
+        setCouponCode("");
+        await refreshStatus();
+      }
+    } catch (err: any) {
+      console.error("[SubscriptionScreen] Coupon error:", err);
+      const msg = err?.data?.detail || err?.message || "Invalid coupon code";
+      setCouponError(typeof msg === "string" ? msg : "Invalid coupon code");
+    } finally {
+      setCouponLoading(false);
     }
   };
 
@@ -224,7 +256,7 @@ export function SubscriptionScreen() {
               <View style={styles.studentsBadge}>
                 <Feather name="users" size={14} color={c.primary} />
                 <Text style={styles.studentsBadgeText}>
-                  {subscription.registered_students}/{subscription.student_limit}
+                  {isTrial || subscription.student_limit >= 999999 ? `${subscription.registered_students} · Unlimited` : `${subscription.registered_students}/${subscription.student_limit}`}
                 </Text>
               </View>
             </View>
@@ -307,6 +339,30 @@ export function SubscriptionScreen() {
             <Text style={styles.secureText}>Secure Payment Processing</Text>
           </View>
         </View>
+
+        {/* ─── Coupon Code Section ───────────── */}
+        <View style={styles.couponContainer}>
+          <TextInput
+            style={[styles.couponInput, couponError && { borderColor: c.danger }]}
+            placeholder="Enter Coupon Code"
+            placeholderTextColor={c.textTertiary}
+            value={couponCode}
+            onChangeText={(text) => {
+              setCouponCode(text);
+              if (couponError) setCouponError(null);
+            }}
+            autoCapitalize="characters"
+          />
+          <Button
+            label={couponLoading ? "..." : "Activate"}
+            onPress={handleApplyCoupon}
+            disabled={!couponCode.trim() || couponLoading}
+            style={styles.couponButton}
+          />
+        </View>
+        {couponError && (
+          <Text style={styles.couponErrorText}>{couponError}</Text>
+        )}
 
         {/* ─── Contact Support ───────────────── */}
         <SupportCard />
@@ -454,6 +510,34 @@ const makeStyles = (c: ThemeColors) =>
     secureText: {
       ...typography.caption,
       color: c.textTertiary,
+    },
+
+    // ─── Coupon Code ──────────
+    couponContainer: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 12,
+      marginBottom: 8,
+    },
+    couponInput: {
+      flex: 1,
+      height: 48,
+      borderWidth: 1,
+      borderColor: c.border,
+      borderRadius: radius.md,
+      paddingHorizontal: 16,
+      color: c.textPrimary,
+      ...typography.body,
+    },
+    couponButton: {
+      height: 48,
+      paddingHorizontal: 24,
+    },
+    couponErrorText: {
+      ...typography.caption,
+      color: c.danger,
+      marginBottom: spacing.lg,
+      paddingHorizontal: 4,
     },
 
     // ─── Success State ────────

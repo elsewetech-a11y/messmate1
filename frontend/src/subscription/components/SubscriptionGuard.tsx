@@ -12,31 +12,14 @@ type SubscriptionGuardProps = {
 
 export function SubscriptionGuard({ children, role }: SubscriptionGuardProps) {
   const { loading, canAccessFeatures, subscription, renew } = useSubscription();
-  const { c } = useTheme();
-  const router = useRouter();
 
-  useEffect(() => {
-    if (!loading && subscription && !canAccessFeatures && role === "admin") {
-      router.replace("/(admin)/subscription" as any);
-    }
-  }, [loading, subscription, canAccessFeatures, role, router]);
-
-  if (loading && !subscription) {
-    return (
-      <View style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: c.bg }}>
-        <ActivityIndicator size="large" color={c.primary} />
-      </View>
-    );
+  // Admin always has access to UI, with top SubscriptionBanner indicating plan status
+  if (role === "admin") {
+    return <>{children}</>;
   }
 
-  if (!canAccessFeatures) {
-    if (role === "admin") {
-      return (
-        <View style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: c.bg }}>
-          <ActivityIndicator size="large" color={c.primary} />
-        </View>
-      );
-    }
+  // If subscription is confirmed expired for student, display the lock screen
+  if (!loading && subscription && !canAccessFeatures) {
     return (
       <SubscriptionLockScreen 
         role={role} 

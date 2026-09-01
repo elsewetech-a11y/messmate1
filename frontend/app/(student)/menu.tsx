@@ -185,7 +185,7 @@ export default function StudentMenu() {
       </View>
     ));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, weekDays, monthWeeks, overrides]);
+  }, [mode, weekDays, monthWeeks, overrides, styles, c]);
 
   if (loading) {
     return (

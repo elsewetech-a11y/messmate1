@@ -1,58 +1,59 @@
 /**
- * IST (Indian Standard Time) Date Utilities — Asia/Kolkata (UTC +05:30)
+ * IST (Indian Standard Time) Date Utilities — Asia/Kolkata (Tamil Nadu, India, UTC +05:30)
  *
  * ALL user-facing date/time display must go through these helpers.
- * Never call `new Date()` or `Date.now()` directly for display purposes.
+ * Dates are dynamically calculated using Asia/Kolkata (UTC+05:30) exclusively.
+ * No hardcoded dates, no fixed dates, no device/server timezone dependency.
  */
 
-const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000; // 5 hours 30 minutes in ms
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000; // 5 hours 30 minutes in milliseconds
 
-/** 
- * Returns a Date object where .getHours()/.getMinutes() give the current IST time.
- * Works correctly regardless of the device's local timezone.
- *
- * Logic: IST = UTC + 5:30. Device local = UTC - localOffset.
- * To make .getHours() show IST hours, we create a Date shifted by:
- * IST_OFFSET + localOffset (both in ms)
- *
- * Example at 11:35 PM PDT (UTC-7):
- *   UTC = 06:35 AM July 16 → IST = 12:05 PM July 16
- *   nowIST().getHours() → 12 ✅
+/**
+ * Returns the current IST (Tamil Nadu) time as a Date whose UTC fields represent IST values.
+ * This allows getUTCHours(), getUTCDate(), getUTCMonth(), getUTCFullYear(), getUTCDay()
+ * to reliably return exact Tamil Nadu values regardless of device or server timezone.
  */
 export function nowIST(): Date {
-  const now = new Date();
-  const localOffsetMs = now.getTimezoneOffset() * 60000; // +ve for west-of-UTC zones
-  return new Date(now.getTime() + IST_OFFSET_MS + localOffsetMs);
+  return new Date(Date.now() + IST_OFFSET_MS);
 }
 
 /**
- * Returns the current date in IST as a YYYY-MM-DD string.
- * Use this wherever you need today's ISO date for API calls.
+ * Returns the current date in Tamil Nadu (IST) as a YYYY-MM-DD string.
+ * Dynamically computed — updates every day at midnight IST.
  */
 export function todayISOinIST(): string {
-  const now = new Date();
-  // Shift to IST
-  const istMs = now.getTime() + IST_OFFSET_MS;
-  const istDate = new Date(istMs);
-  const y = istDate.getUTCFullYear();
-  const m = String(istDate.getUTCMonth() + 1).padStart(2, "0");
-  const d = String(istDate.getUTCDate()).padStart(2, "0");
+  const ist = nowIST();
+  const y = ist.getUTCFullYear();
+  const m = String(ist.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(ist.getUTCDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
 }
 
 /**
- * Parses an ISO date string (YYYY-MM-DD or full ISO) and returns a Date
- * object anchored to IST midnight, avoiding any local-timezone shift.
+ * Returns tomorrow's date in Tamil Nadu (IST) as a YYYY-MM-DD string.
  */
-export function parseISODateAsIST(isoStr: string): Date {
+export function tomorrowISOinIST(): string {
+  const d = tomorrowInIST();
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/**
+ * Parses an ISO date string (YYYY-MM-DD or full ISO) and returns a Date
+ * object whose UTC fields represent the exact date/time in Tamil Nadu (IST).
+ */
+export function parseISODateAsIST(isoStr: string | null | undefined): Date {
   if (!isoStr) return new Date(NaN);
-  // If it's a date-only string (YYYY-MM-DD), append IST midnight
   const isDateOnly = /^\d{4}-\d{2}-\d{2}$/.test(isoStr);
   if (isDateOnly) {
-    // Treat as IST midnight by appending +05:30
-    return new Date(`${isoStr}T00:00:00+05:30`);
+    const parts = isoStr.split("-").map(Number);
+    return new Date(Date.UTC(parts[0], parts[1] - 1, parts[2], 0, 0, 0));
   }
-  return new Date(isoStr);
+  const epoch = new Date(isoStr).getTime();
+  if (isNaN(epoch)) return new Date(NaN);
+  return new Date(epoch + IST_OFFSET_MS);
 }
 
 const MONTH_NAMES = [
@@ -66,50 +67,41 @@ const DAY_NAMES = [
 
 /**
  * Formats an IST Date object as "DD Month YYYY"
- * Example: "15 July 2026"
+ * Example: "01 September 2026"
  */
 export function formatDateIST(date: Date): string {
   if (isNaN(date.getTime())) return "";
-  // Convert UTC time to IST
-  const istMs = date.getTime() + IST_OFFSET_MS;
-  const d = new Date(istMs);
-  const day = String(d.getUTCDate()).padStart(2, "0");
-  const month = MONTH_NAMES[d.getUTCMonth()];
-  const year = d.getUTCFullYear();
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  const month = MONTH_NAMES[date.getUTCMonth()];
+  const year = date.getUTCFullYear();
   return `${day} ${month} ${year}`;
 }
 
 /**
  * Returns the full day name for an IST Date object.
- * Example: "Wednesday"
+ * Example: "Tuesday"
  */
 export function getDayNameIST(date: Date): string {
   if (isNaN(date.getTime())) return "";
-  const istMs = date.getTime() + IST_OFFSET_MS;
-  const d = new Date(istMs);
-  return DAY_NAMES[d.getUTCDay()];
+  return DAY_NAMES[date.getUTCDay()];
 }
 
 /**
  * Formats time in 12-hour IST format from an API/ISO-sourced Date.
- * Uses the UTC-shift approach: date from parseISODateAsIST() or API timestamps.
- * Example: "08:30 PM"
+ * Example: "11:40 AM"
  */
 export function formatTimeIST(date: Date): string {
   if (isNaN(date.getTime())) return "";
-  const istMs = date.getTime() + IST_OFFSET_MS;
-  const d = new Date(istMs);
-  let hours = d.getUTCHours();
-  const minutes = String(d.getUTCMinutes()).padStart(2, "0");
+  let hours = date.getUTCHours();
+  const minutes = String(date.getUTCMinutes()).padStart(2, "0");
   const ampm = hours >= 12 ? "PM" : "AM";
   hours = hours % 12 || 12;
   return `${String(hours).padStart(2, "0")}:${minutes} ${ampm}`;
 }
 
 /**
- * Formats time in 12-hour IST format from a Date returned by nowIST() or
- * a DateTimePicker — reads .getHours()/.getMinutes() which already hold IST values.
- * Example: "11:35 PM"
+ * Formats time in 12-hour IST format from a DateTimePicker Date.
+ * Example: "11:40 AM"
  */
 export function formatTimeFromPicker(date: Date): string {
   if (isNaN(date.getTime())) return "";
@@ -121,8 +113,8 @@ export function formatTimeFromPicker(date: Date): string {
 }
 
 /**
- * Formats a full datetime stamp in IST.
- * Example: "Wednesday, 15 July 2026 • 08:30 PM"
+ * Formats a full datetime stamp in IST (Tamil Nadu time).
+ * Example: "Tuesday, 01 September 2026 • 11:40 AM"
  */
 export function formatDateTimeIST(date: Date): string {
   if (isNaN(date.getTime())) return "";
@@ -143,7 +135,7 @@ export function formatISOasDateIST(isoStr: string | null | undefined): string {
 
 /**
  * Formats an ISO string (from the API) as full datetime in IST.
- * Example: "Wednesday, 15 July 2026 • 08:30 PM"
+ * Example: "Tuesday, 01 September 2026 • 11:40 AM"
  */
 export function formatISOasDateTimeIST(isoStr: string | null | undefined): string {
   if (!isoStr) return "";
@@ -154,8 +146,7 @@ export function formatISOasDateTimeIST(isoStr: string | null | undefined): strin
  * Returns today's date in IST as a JS Date object set to IST midnight UTC.
  */
 export function todayInIST(): Date {
-  const isoStr = todayISOinIST();
-  return parseISODateAsIST(isoStr);
+  return parseISODateAsIST(todayISOinIST());
 }
 
 /**
@@ -163,36 +154,54 @@ export function todayInIST(): Date {
  */
 export function tomorrowInIST(): Date {
   const today = todayInIST();
-  return new Date(today.getTime() + 24 * 60 * 60 * 1000);
+  const tomorrow = new Date(today.getTime() + 24 * 60 * 60 * 1000);
+  return tomorrow;
 }
 
 /**
  * Formats the date label shown on the student/admin home header.
- * Input: YYYY-MM-DD string from the API.
- * Output: "Wednesday, 15 July 2026"
+ * Dynamically resolves "today" / "tomorrow" or formats any given ISO date string.
+ * Output: "Tuesday, 01 September 2026"
  */
-export function formatHomeDate(isoDateStr: string): string {
-  if (!isoDateStr) return "";
-  const d = parseISODateAsIST(isoDateStr);
+export function formatHomeDate(isoDateStr?: string | null, forDay?: "today" | "tomorrow"): string {
+  let targetIso: string;
+  if (forDay === "tomorrow") {
+    targetIso = tomorrowISOinIST();
+  } else if (forDay === "today" || !isoDateStr) {
+    targetIso = todayISOinIST();
+  } else {
+    targetIso = isoDateStr.slice(0, 10);
+  }
+  const d = parseISODateAsIST(targetIso);
   const day = getDayNameIST(d);
   const datePart = formatDateIST(d);
   return `${day}, ${datePart}`;
 }
 
 /**
- * Returns a short relative label: "Today" or "Tomorrow" or the date.
+ * Returns a short relative label: "Today" or "Tomorrow" or the formatted date.
  */
 export function formatRelativeDateIST(isoDateStr: string): string {
+  const dateOnly = (isoDateStr || "").slice(0, 10);
   const todayStr = todayISOinIST();
-  const tomorrowStr = (() => {
-    const t = todayInIST();
-    const tm = new Date(t.getTime() + 86400000);
-    const istMs = tm.getTime() + IST_OFFSET_MS;
-    const d = new Date(istMs);
-    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
-  })();
-  const dateOnly = isoDateStr.slice(0, 10);
+  const tomorrowStr = tomorrowISOinIST();
   if (dateOnly === todayStr) return "Today";
   if (dateOnly === tomorrowStr) return "Tomorrow";
   return formatISOasDateIST(isoDateStr);
+}
+
+/**
+ * Returns the current active meal type based on Tamil Nadu (IST) time:
+ * - Breakfast: 00:00 – 10:30
+ * - Lunch: 10:30 – 15:30
+ * - Dinner: 15:30 onwards
+ */
+export function getCurrentMealIST(): "breakfast" | "lunch" | "dinner" {
+  const ist = nowIST();
+  const hours = ist.getUTCHours();
+  const minutes = ist.getUTCMinutes();
+  const totalMinutes = hours * 60 + minutes;
+  if (totalMinutes < 630) return "breakfast";
+  if (totalMinutes < 930) return "lunch";
+  return "dinner";
 }

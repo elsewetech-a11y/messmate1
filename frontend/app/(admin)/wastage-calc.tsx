@@ -248,13 +248,11 @@ export default function AdminWastageCalc() {
 
   if (loading) {
     return (
-      <SubscriptionGuard role="admin">
       <SafeAreaView style={styles.safe} edges={["top"]}>
         <View style={[styles.center, { flex: 1 }]}>
           <ActivityIndicator color={c.primary} />
         </View>
       </SafeAreaView>
-      </SubscriptionGuard>
     );
   }
 
@@ -279,7 +277,6 @@ export default function AdminWastageCalc() {
     : null;
 
   return (
-    <SubscriptionGuard role="admin">
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <Toast
         testID="wcalc-toast"
@@ -490,7 +487,6 @@ export default function AdminWastageCalc() {
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
-    </SubscriptionGuard>
   );
 }
 

@@ -72,7 +72,7 @@ export function GlassTabBar({
         ]}
       >
         <BlurView
-          intensity={Platform.OS === "ios" ? 100 : 95}
+          intensity={Platform.OS === "ios" ? 85 : 80}
           tint={c.tabBarBlurTint as any}
           style={StyleSheet.absoluteFill}
         />

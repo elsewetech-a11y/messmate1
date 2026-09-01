@@ -140,5 +140,49 @@ class TestFreeTrialAndValidation(unittest.IsolatedAsyncioTestCase):
         min_required_2 = max(approved_students_2, 250)
         self.assertEqual(min_required_2, 250, "Platform base minimum 250 applies when approved count < 250")
 
+    async def test_6_new_admin_signup_without_sub_gets_10_days_trial_unlimited(self):
+        """Verify that a brand new institution without any subscription doc gets created as 10-day trial with unlimited student limit."""
+        with patch("server.subscriptions_col.find_one", new=AsyncMock(return_value=None)), \
+             patch("server.users_col.count_documents", new=AsyncMock(return_value=0)), \
+             patch("server.users_col.find_one", new=AsyncMock(return_value={"id": "admin-123", "email": "admin@test.com"})), \
+             patch("server.subscriptions_col.insert_one", new=AsyncMock()) as mock_insert:
+            
+            res = await get_subscription_status("BrandNewHostel")
+            self.assertEqual(res["status"], "TRIAL_ACTIVE")
+            self.assertEqual(res["is_trial"], True)
+            self.assertEqual(res["days_remaining"], 10)
+            self.assertEqual(res["student_limit"], 999999)
+            self.assertEqual(res["plan_type"], "trial")
+            self.assertTrue(mock_insert.called)
+            inserted_doc = mock_insert.call_args[0][0]
+            self.assertEqual(inserted_doc["status"], "TRIAL_ACTIVE")
+            self.assertEqual(inserted_doc["is_trial"], True)
+            self.assertEqual(inserted_doc["student_limit"], 999999)
+
+    async def test_7_unpaid_active_2027_sub_heals_to_10_days_trial(self):
+        """Verify that an unpaid ACTIVE subscription with a 2027 date heals to a 10-day free trial with unlimited student capacity."""
+        now_dt = datetime.now(IST)
+        corrupted_2027_sub = {
+            "institution_or_hostel_name": "Hostel_Corrupted2027",
+            "status": "ACTIVE",
+            "is_trial": False,
+            "subscription_end_date": "2027-07-20T00:00:00+00:00",
+            "plan_type": "yearly",
+            "student_limit": 500,
+            "payment_status": "NONE"
+        }
+        mock_admin = {"created_at": now_dt.isoformat(), "role": "admin"}
+        with patch("server.subscriptions_col.find_one", new=AsyncMock(return_value=corrupted_2027_sub)), \
+             patch("server.users_col.count_documents", new=AsyncMock(return_value=10)), \
+             patch("server.users_col.find_one", new=AsyncMock(return_value=mock_admin)), \
+             patch("server.subscriptions_col.update_one", new=AsyncMock()) as mock_update:
+            
+            res = await get_subscription_status("Hostel_Corrupted2027")
+            self.assertEqual(res["status"], "TRIAL_ACTIVE")
+            self.assertEqual(res["is_trial"], True)
+            self.assertEqual(res["days_remaining"], 10)
+            self.assertEqual(res["student_limit"], 999999)
+            self.assertTrue(mock_update.called)
+
 if __name__ == "__main__":
     unittest.main()

@@ -47,10 +47,10 @@ export default function StudentNotificationsScreen() {
   const [toast, setToast] = useState<{ message: string; variant: "success" | "error" | "info" } | null>(null);
   const [selectedNotif, setSelectedNotif] = useState<StudentNotification | null>(null);
 
-  const fetchNotifications = useCallback(async () => {
+  const fetchNotifications = useCallback(async (showSpinner = false) => {
     if (!token) return;
     try {
-      setLoading(true);
+      if (showSpinner) setLoading(true);
       const data = await api.studentNotifications(token);
       setNotifications(data.items || []);
     } catch (error) {
@@ -62,15 +62,15 @@ export default function StudentNotificationsScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      fetchNotifications();
-    }, [fetchNotifications])
+      fetchNotifications(notifications.length === 0);
+    }, [fetchNotifications, notifications.length])
   );
 
   useEffect(() => {
     const sub = DeviceEventEmitter.addListener(REALTIME_EVENT, (msg) => {
       if (msg.type === "admin_action" || msg.type === "notification") {
         console.log("[Realtime] Action received in notifications, reloading...");
-        fetchNotifications();
+        fetchNotifications(false);
       }
     });
     return () => sub.remove();

@@ -36,7 +36,7 @@ import { ToggleOnOff } from "@/src/components/ToggleOnOff";
 import { radius, shadow, spacing, typography, useTheme, type ThemeColors } from "@/src/theme";
 import { REALTIME_EVENT } from "@/src/api/useRealtimeSync";
 import { SubscriptionGuard } from "@/src/subscription/components/SubscriptionGuard";
-import { formatDateIST } from "@/src/utils/istDate";
+import { formatDateIST, getCurrentMealIST } from "@/src/utils/istDate";
 
 const MEAL_ICON: Record<MealType, keyof typeof Feather.glyphMap> = {
   breakfast: "coffee",
@@ -62,7 +62,7 @@ export default function AdminStudentsStatus() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [acting, setActing] = useState<string | null>(null);
-  const [activeMeal, setActiveMeal] = useState<MealType>("breakfast");
+  const [activeMeal, setActiveMeal] = useState<MealType>(() => getCurrentMealIST());
   const [toast, setToast] = useState<{
     message: string;
     variant: "success" | "error" | "info";
@@ -81,7 +81,7 @@ export default function AdminStudentsStatus() {
   const [searchQuery, setSearchQuery] = useState("");
   const [detailsStudent, setDetailsStudent] = useState<StudentRow | null>(null);
 
-  const fetchList = async (status: "all" | "pending" | "approved" | "blocked") => {
+  const fetchList = useCallback(async (status: "all" | "pending" | "approved" | "blocked") => {
     if (!token) return;
     setActiveList(status);
     setListLoading(true);
@@ -93,7 +93,7 @@ export default function AdminStudentsStatus() {
     } finally {
       setListLoading(false);
     }
-  };
+  }, [token]);
 
   const filteredListData = useMemo(() => {
     if (!searchQuery.trim()) return listData;
@@ -258,18 +258,15 @@ export default function AdminStudentsStatus() {
 
   if (loading) {
     return (
-      <SubscriptionGuard role="admin">
       <SafeAreaView style={styles.safe} edges={["top"]}>
         <View style={styles.center}>
           <ActivityIndicator color={c.primary} />
         </View>
       </SafeAreaView>
-      </SubscriptionGuard>
     );
   }
 
   return (
-    <SubscriptionGuard role="admin">
     <SafeAreaView style={styles.safe} edges={["top"]}>
 
       {/* Student List Modal */}
@@ -916,7 +913,6 @@ export default function AdminStudentsStatus() {
       </Modal>
 
     </SafeAreaView>
-    </SubscriptionGuard>
   );
 }
 

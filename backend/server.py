@@ -96,18 +96,50 @@ RESET_TOKEN_EXPIRY_MIN = int(os.environ.get("RESET_TOKEN_EXPIRY_MIN", "10"))
 EMERGENT_PUSH_BASE_URL = "https://integrations.emergentagent.com"
 EMERGENT_PUSH_KEY = os.environ.get("EMERGENT_PUSH_KEY", "placeholder")
 
+# Synchronize Google OAuth clock skew if machine time differs from Google servers
 try:
-    fcm_cred_path = os.getenv("FCM_CREDENTIALS_PATH", "firebase-adminsdk.json")
-    full_cred_path = ROOT_DIR / fcm_cred_path if not os.path.isabs(fcm_cred_path) else Path(fcm_cred_path)
-    if full_cred_path.exists():
-        cred = credentials.Certificate(str(full_cred_path))
+    import email.utils
+    import google.auth._helpers
+    with httpx.Client(timeout=5) as client_time:
+        resp_time = client_time.get("https://oauth2.googleapis.com")
+        server_date_str = resp_time.headers.get("date")
+        if server_date_str:
+            server_dt = email.utils.parsedate_to_datetime(server_date_str)
+            local_dt = datetime.now(timezone.utc)
+            offset_delta = server_dt - local_dt
+            if abs(offset_delta.total_seconds()) > 3:
+                orig_utcnow = google.auth._helpers.utcnow
+                google.auth._helpers.utcnow = lambda: orig_utcnow() + offset_delta
+                logger.info("Google OAuth clock skew compensated by %s seconds.", offset_delta.total_seconds())
+except Exception as e:
+    logger.debug("Clock skew sync skipped: %s", e)
+
+try:
+    service_acc_json = os.environ.get("FIREBASE_SERVICE_ACCOUNT") or os.environ.get("FIREBASE_CREDENTIALS_JSON")
+    if service_acc_json and service_acc_json.strip().startswith("{"):
+        import json
+        cred = credentials.Certificate(json.loads(service_acc_json.strip()))
         firebase_admin.initialize_app(cred)
-        logger.info("Firebase Admin FCM initialized with credentials from %s", full_cred_path)
-    elif "GOOGLE_APPLICATION_CREDENTIALS" in os.environ or "FIREBASE_CONFIG" in os.environ:
-        firebase_admin.initialize_app()
-        logger.info("Firebase Admin FCM initialized with default credentials.")
+        logger.info("Firebase Admin FCM initialized from environment variable JSON.")
     else:
-        logger.warning("No Firebase credentials found; FCM messaging will log simulated dispatch until credentials are set.")
+        fcm_cred_path = os.getenv("FCM_CREDENTIALS_PATH", "firebase-adminsdk.json")
+        candidate_paths = [
+            Path(fcm_cred_path) if os.path.isabs(fcm_cred_path) else None,
+            ROOT_DIR / fcm_cred_path,
+            Path.cwd() / fcm_cred_path,
+            Path(__file__).parent / fcm_cred_path,
+            Path(__file__).parent / "firebase-adminsdk.json"
+        ]
+        found_cred_path = next((p for p in candidate_paths if p and p.exists()), None)
+        if found_cred_path:
+            cred = credentials.Certificate(str(found_cred_path))
+            firebase_admin.initialize_app(cred)
+            logger.info("Firebase Admin FCM initialized with credentials from %s", found_cred_path)
+        elif "GOOGLE_APPLICATION_CREDENTIALS" in os.environ or "FIREBASE_CONFIG" in os.environ:
+            firebase_admin.initialize_app()
+            logger.info("Firebase Admin FCM initialized with default credentials.")
+        else:
+            logger.warning("No Firebase credentials found; FCM messaging will log simulated dispatch until credentials are set.")
 except ValueError:
     pass
 except Exception as e:
@@ -713,12 +745,11 @@ def to_public(d: dict) -> UserPublic:
 
 
 def today_iso() -> str:
-    return "2026-08-29"
+    return datetime.now(IST).strftime("%Y-%m-%d")
 
 
 def now_iso() -> str:
-    now = datetime.now(IST)
-    return now.replace(year=2026, month=8, day=29).isoformat()
+    return datetime.now(IST).isoformat()
 
 
 def day_of_week(d: date) -> str:
@@ -1505,21 +1536,40 @@ async def send_push(
     if "title" not in data or "message" not in data:
         raise ValueError("push data must include title and message")
     
-    # Map user IDs to their FCM tokens
+    # Map user IDs to all active unique FCM tokens
     token_user_map = []
-    async for u in users_col.find({"id": {"$in": recipients}}):
-        tok = u.get("fcm_token") or u.get("push_token")
-        if tok and isinstance(tok, str) and tok.strip() and "simulator" not in tok.lower():
-            token_user_map.append((u["id"], tok.strip()))
+    seen_tokens = set()
+
+    try:
+        async for u in users_col.find({"id": {"$in": recipients}}):
+            tok = u.get("fcm_token") or u.get("push_token")
+            if tok and isinstance(tok, str) and tok.strip() and "simulator" not in tok.lower():
+                t_clean = tok.strip()
+                if t_clean not in seen_tokens:
+                    seen_tokens.add(t_clean)
+                    token_user_map.append((u["id"], t_clean))
+    except Exception as e:
+        logger.warning("send_push error reading users_col: %s", e)
+
+    try:
+        async for pt in push_tokens_col.find({"user_id": {"$in": recipients}}):
+            tok = pt.get("device_token")
+            if tok and isinstance(tok, str) and tok.strip() and "simulator" not in tok.lower():
+                t_clean = tok.strip()
+                if t_clean not in seen_tokens:
+                    seen_tokens.add(t_clean)
+                    token_user_map.append((pt["user_id"], t_clean))
+    except Exception as e:
+        logger.warning("send_push error reading push_tokens_col: %s", e)
             
     if not token_user_map:
         logger.info("send_push: No valid FCM tokens found for target recipients.")
         return
 
-    title_val = data.get("title", "MessMate Notification").strip()
+    title_val = data.get("title", "MessMate").strip() or "MessMate"
     body_val = data.get("message", "").strip()
-    action_url = str(data.get("action_url", "/notifications"))
-    deeplink = str(data.get("deeplink", "/notifications"))
+    action_url = str(data.get("action_url", "/(student)/home"))
+    deeplink = str(data.get("deeplink", "/(student)/home"))
     
     data_payload = {
         "action_url": action_url,
@@ -1530,7 +1580,6 @@ async def send_push(
         "timestamp": now_iso()
     }
     
-    # If Firebase Admin hasn't been initialized with live credentials, simulate and log
     if not firebase_admin._apps:
         logger.info("[FCM SIMULATION] Push dispatched to %d tokens | Title: %s | Body: %s", len(token_user_map), title_val, body_val)
         return
@@ -1544,7 +1593,9 @@ async def send_push(
                 priority="high",
                 notification=messaging.AndroidNotification(
                     channel_id="default",
-                    default_sound=True
+                    default_sound=True,
+                    priority="max",
+                    visibility="public"
                 )
             ),
             token=token
@@ -1552,7 +1603,6 @@ async def send_push(
         messages.append(msg)
         
     try:
-        # Deliver via Firebase Admin messaging SDK
         response = await asyncio.to_thread(messaging.send_each, messages)
         logger.info("FCM push dispatched: %d success, %d failure", response.success_count, response.failure_count)
         
@@ -1562,10 +1612,14 @@ async def send_push(
                 err = resp.exception
                 uid, bad_token = token_user_map[idx]
                 logger.warning("FCM delivery failed for user %s: %s", uid, err)
-                if isinstance(err, (messaging.UnregisteredError, messaging.InvalidArgumentError)) or any(x in str(err).lower() for x in ["unregistered", "not-registered", "invalid-registration-token", "invalid_argument"]):
-                    await users_col.update_one({"id": uid}, {"$unset": {"fcm_token": "", "push_token": ""}})
-                    await push_tokens_col.delete_many({"device_token": bad_token})
-                    logger.info("Removed outdated/invalid FCM token for user %s", uid)
+                err_str = str(err).lower()
+                if isinstance(err, messaging.UnregisteredError) or any(x in err_str for x in ["unregistered", "not-registered", "invalid-registration-token", "invalid_argument", "not a valid fcm registration token", "invalid registration token"]):
+                    try:
+                        await users_col.update_one({"id": uid}, {"$unset": {"fcm_token": "", "push_token": ""}})
+                        await push_tokens_col.delete_many({"device_token": bad_token})
+                        logger.info("Removed outdated/invalid FCM token for user %s", uid)
+                    except Exception:
+                        pass
     except Exception as e:
         logger.warning("send_push FCM batch delivery error: %s", e, exc_info=True)
 
@@ -3282,9 +3336,9 @@ async def student_notifications(u: dict = Depends(require_approved_student)):
     except Exception as e:
         logger.warning("Error dispatching scheduled notifications: %s", e)
         
-    query = {"recipient_id": u["id"]}
+    query = {"$or": [{"recipient_id": u["id"]}, {"student_id": u["id"]}]}
     if u.get("admin_id"):
-        query["$or"] = [{"sender_id": u["admin_id"]}, {"sender_id": {"$exists": False}}, {"sender_id": None}]
+        query["$and"] = [{"$or": [{"sender_id": u["admin_id"]}, {"sender_id": {"$exists": False}}, {"sender_id": None}]}]
         
     items = []
     cursor = student_notifications_col.find(
@@ -3298,7 +3352,7 @@ async def student_notifications(u: dict = Depends(require_approved_student)):
 @api.post("/student/notifications/{notif_id}/read")
 async def mark_student_notif_read(notif_id: str, u: dict = Depends(require_approved_student)):
     res = await student_notifications_col.update_one(
-        {"id": notif_id, "recipient_id": u["id"]},
+        {"id": notif_id, "$or": [{"recipient_id": u["id"]}, {"student_id": u["id"]}]},
         {"$set": {"read_status": True}}
     )
     if res.matched_count == 0:
@@ -3308,7 +3362,7 @@ async def mark_student_notif_read(notif_id: str, u: dict = Depends(require_appro
 @api.delete("/student/notifications/{notif_id}")
 async def delete_student_notif(notif_id: str, u: dict = Depends(require_approved_student)):
     res = await student_notifications_col.delete_one(
-        {"id": notif_id, "recipient_id": u["id"]}
+        {"id": notif_id, "$or": [{"recipient_id": u["id"]}, {"student_id": u["id"]}]}
     )
     if res.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Notification not found")
@@ -3316,7 +3370,7 @@ async def delete_student_notif(notif_id: str, u: dict = Depends(require_approved
 
 @api.post("/student/notifications/clear")
 async def clear_student_notifs(u: dict = Depends(require_approved_student)):
-    await student_notifications_col.delete_many({"recipient_id": u["id"]})
+    await student_notifications_col.delete_many({"$or": [{"recipient_id": u["id"]}, {"student_id": u["id"]}]})
     return {"ok": True}
 
 @api.get("/student/notification-settings")
@@ -3369,6 +3423,7 @@ async def admin_push_immediate(payload: PushImmediateRequest, u: dict = Depends(
         docs.append({
             "id": str(uuid.uuid4()),
             "recipient_id": r_id,
+            "student_id": r_id,
             "title": payload.title.strip(),
             "message": payload.message.strip(),
             "date": indian_date,
@@ -3398,7 +3453,8 @@ async def admin_push_immediate(payload: PushImmediateRequest, u: dict = Depends(
             "title": payload.title.strip(), 
             "message": payload.message.strip(),
             "subtext": "MessMate",
-            "action_url": "/notifications"
+            "action_url": "/(student)/home",
+            "deeplink": "/(student)/home"
         })
     except Exception:
         pass
@@ -4477,17 +4533,17 @@ async def _dispatch_for_single_db() -> int:
             
             now = now_iso()
             if recipients:
-                from utils.istDate import parseISODateAsIST, formatDateIST, getDayNameIST, formatTimeIST
-                
-                created_dt = parseISODateAsIST(now)
-                indian_date = formatDateIST(created_dt)
-                indian_day = getDayNameIST(created_dt)
-                indian_time = formatTimeIST(created_dt)
+                indian_months = ["January","February","March","April","May","June",
+                                 "July","August","September","October","November","December"]
+                indian_date = f"{now_dt.day:02d} {indian_months[now_dt.month-1]} {now_dt.year}"
+                indian_day = now_dt.strftime("%A")
+                indian_time = now_dt.strftime("%I:%M %p")
                 
                 docs = []
                 for uid in recipients:
                     docs.append({
                         "id": str(uuid.uuid4()),
+                        "recipient_id": uid,
                         "student_id": uid,
                         "title": doc["title"],
                         "message": doc["message"],
@@ -4516,7 +4572,8 @@ async def _dispatch_for_single_db() -> int:
                     await send_push(
                         recipients,
                         {"title": doc["title"], "message": doc["message"],
-                         "subtext": "MessMate", "action_url": "/notifications"},
+                         "subtext": "MessMate", "action_url": "/(student)/home",
+                         "deeplink": "/(student)/home"},
                         idempotency_key=str(uuid.uuid4()),
                     )
                 except Exception as e:

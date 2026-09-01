@@ -81,9 +81,8 @@ export default function StudentHome() {
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const dateLabel = useMemo(() => {
-    if (!data?.date) return "";
-    return formatHomeDate(data.date);
-  }, [data?.date]);
+    return formatHomeDate(data?.date, forDay);
+  }, [data?.date, forDay]);
 
   const load = useCallback(async () => {
     if (!token) return;
@@ -94,6 +93,7 @@ export default function StudentHome() {
       ]);
       setData(todayRes);
       setReasons(metaRes.reasons);
+      setToast(null);
 
       // hydrate per-meal state if a plan exists
       const fromPlan = (key: MealType): MealPlan => {

@@ -34,7 +34,7 @@ export function SubscriptionWidget() {
         </View>
         <View style={styles.gridItem}>
           <Text style={styles.label}>Student Capacity</Text>
-          <Text style={styles.value}>{registered_students} / {student_limit}</Text>
+          <Text style={styles.value}>{is_trial || student_limit >= 999999 ? `${registered_students} (Unlimited)` : `${registered_students} / ${student_limit}`}</Text>
         </View>
         <View style={styles.gridItem}>
           <Text style={styles.label}>Days Remaining</Text>

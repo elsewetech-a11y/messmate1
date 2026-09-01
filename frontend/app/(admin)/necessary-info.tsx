@@ -473,18 +473,15 @@ export default function AdminNecessaryInfo() {
 
   if (loading) {
     return (
-      <SubscriptionGuard role="admin">
       <SafeAreaView style={styles.safe} edges={["top"]}>
         <View style={styles.center}>
           <ActivityIndicator color={c.primary} />
         </View>
       </SafeAreaView>
-      </SubscriptionGuard>
     );
   }
 
   return (
-    <SubscriptionGuard role="admin">
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <Toast
         testID="ni-toast"
@@ -646,7 +643,6 @@ export default function AdminNecessaryInfo() {
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
-    </SubscriptionGuard>
   );
 }
 

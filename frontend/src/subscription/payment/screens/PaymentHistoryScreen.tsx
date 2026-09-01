@@ -16,10 +16,10 @@ export function PaymentHistoryScreen() {
   const [transactions, setTransactions] = useState<TransactionPublic[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const fetchTransactions = useCallback(async () => {
+  const fetchTransactions = useCallback(async (showSpinner = false) => {
     if (!token) return;
     try {
-      setLoading(true);
+      if (showSpinner) setLoading(true);
       const data = await paymentService.getPaymentHistory(token);
       setTransactions(data);
     } catch (err) {
@@ -31,8 +31,8 @@ export function PaymentHistoryScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      fetchTransactions();
-    }, [fetchTransactions])
+      fetchTransactions(transactions.length === 0);
+    }, [fetchTransactions, transactions.length])
   );
 
   const handleDownload = (transaction: TransactionPublic) => {

@@ -164,6 +164,7 @@ export default function AdminDashboard() {
       try {
         const res = await api.adminDashboard(token, which);
         setData(res);
+        setToast(null);
       } catch (e: any) {
         setToast(e?.message || "Failed to load dashboard");
       } finally {
@@ -191,12 +192,10 @@ export default function AdminDashboard() {
   }, [load, forDay]);
 
   const dateLabel = useMemo(() => {
-    if (!data?.date) return "";
-    return formatHomeDate(data.date);
-  }, [data?.date]);
+    return formatHomeDate(data?.date, forDay);
+  }, [data?.date, forDay]);
 
   return (
-    <SubscriptionGuard role="admin">
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <Toast
         testID="dash-toast"
@@ -304,7 +303,6 @@ export default function AdminDashboard() {
         <SubscriptionWidget />
       </ScrollView>
     </SafeAreaView>
-    </SubscriptionGuard>
   );
 }
 

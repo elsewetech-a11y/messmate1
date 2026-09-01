@@ -40,6 +40,24 @@ class MainApplication : Application(), ReactApplication {
 
   override fun onCreate() {
     super.onCreate()
+
+    // Create high-priority Notification Channel natively for reliable Android 8+ FCM delivery
+    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+      val channel = android.app.NotificationChannel(
+        "default",
+        "Default Notifications",
+        android.app.NotificationManager.IMPORTANCE_HIGH
+      ).apply {
+        description = "MessMate Push Notifications"
+        enableLights(true)
+        enableVibration(true)
+        setShowBadge(true)
+        lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
+      }
+      val notificationManager = getSystemService(android.app.NotificationManager::class.java)
+      notificationManager?.createNotificationChannel(channel)
+    }
+
     DefaultNewArchitectureEntryPoint.releaseLevel = try {
       ReleaseLevel.valueOf(BuildConfig.REACT_NATIVE_RELEASE_LEVEL.uppercase())
     } catch (e: IllegalArgumentException) {

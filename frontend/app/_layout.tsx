@@ -3,7 +3,7 @@ import { Stack, useRouter } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import * as Linking from "expo-linking";
 import React, { useEffect } from "react";
-import { LogBox, Platform, StatusBar } from "react-native";
+import { DeviceEventEmitter, LogBox, Platform, StatusBar } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { AuthProvider, useAuth, useAuthRouting } from "@/src/auth/AuthContext";
@@ -11,7 +11,8 @@ import { useIconFonts } from "@/src/hooks/use-icon-fonts";
 import { ThemeProvider, useTheme } from "@/src/theme";
 import { ThemeProvider as NavThemeProvider, DarkTheme, DefaultTheme } from "@react-navigation/native";
 import { registerForPush } from "@/src/utils/notifications";
-import { useRealtimeSync } from "@/src/api/useRealtimeSync";
+import { useRealtimeSync, REALTIME_EVENT } from "@/src/api/useRealtimeSync";
+import { api } from "@/src/api/client";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { enableFreeze } from "react-native-screens";
 
@@ -44,11 +45,18 @@ if (Platform.OS === "android") {
     importance: Notifications.AndroidImportance.MAX,
     sound: "default",
     vibrationPattern: [0, 250, 250, 250],
+    enableLights: true,
+    enableVibrate: true,
+    showBadge: true,
   }).catch(() => {});
   Notifications.setNotificationChannelAsync("reminders", {
     name: "Meal reminders",
     importance: Notifications.AndroidImportance.HIGH,
     sound: "default",
+    vibrationPattern: [0, 250, 250, 250],
+    enableLights: true,
+    enableVibrate: true,
+    showBadge: true,
   }).catch(() => {});
 }
 
@@ -115,6 +123,20 @@ function PushBridge() {
   useEffect(() => {
     if (!token || !user) return;
     registerForPush(token, user.id).catch(() => {});
+
+    // Listen to token updates/rotations from Firebase
+    const tokenSub = Notifications.addPushTokenListener((tokenData) => {
+      const freshToken = tokenData?.data;
+      if (freshToken && token && user) {
+        const platform: "ios" | "android" = Platform.OS === "ios" ? "ios" : "android";
+        api.savePushToken(token, { push_token: String(freshToken), platform }).catch(() => {});
+        api.registerPush(token, { user_id: user.id, platform, device_token: String(freshToken) }).catch(() => {});
+      }
+    });
+
+    return () => {
+      tokenSub.remove();
+    };
   }, [token, user]);
 
   // Tap handlers: warm tap + cold start.
@@ -133,29 +155,39 @@ function PushBridge() {
       }
     };
 
-    const tapSub = Notifications.addNotificationResponseReceivedListener((response) => {
+    const tapSub = Notifications.addNotificationResponseReceivedListener(async (response) => {
+      const notifId = response.notification.request.identifier;
+      if (notifId) {
+        const key = `handled_notif_${notifId}`;
+        const alreadyHandled = await AsyncStorage.getItem(key);
+        if (alreadyHandled) {
+          return; // Ignore duplicate tap events from cached OS intents
+        }
+        await AsyncStorage.setItem(key, "1");
+      }
+
       const data = (response.notification.request.content.data || {}) as Record<string, any>;
-      const url = data.deeplink || data.action_url || "/notifications";
-      route(String(url));
+      // Only navigate when the notification carries an explicit deep-link target.
+      // If no URL is present (e.g. a stale cold-start event with no payload), do
+      // nothing and let useAuthRouting send the user to their normal dashboard.
+      const url = data.deeplink || data.action_url;
+      if (url) {
+        route(String(url));
+      }
     });
 
-    Notifications.getLastNotificationResponseAsync().then(async (response) => {
-      if (!response) return;
-      // Only route if the user explicitly tapped the notification
-      if (response.actionIdentifier !== Notifications.DEFAULT_ACTION_IDENTIFIER) return;
 
-      const notifId = response.notification.request.identifier;
-      const lastHandled = await AsyncStorage.getItem("last_handled_notif");
-      if (lastHandled === notifId) return;
-      
-      await AsyncStorage.setItem("last_handled_notif", notifId);
-      const data = (response.notification.request.content.data || {}) as Record<string, any>;
-      const url = data.deeplink || data.action_url || "/notifications";
-      route(String(url));
+
+    const recvSub = Notifications.addNotificationReceivedListener((notification) => {
+      DeviceEventEmitter.emit(REALTIME_EVENT, {
+        type: "new_notification",
+        notification: notification.request.content,
+      });
     });
 
     return () => {
       tapSub.remove();
+      recvSub.remove();
     };
   }, [router]);
 

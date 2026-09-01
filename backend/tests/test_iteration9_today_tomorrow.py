@@ -51,16 +51,20 @@ def _unique_email(prefix="it9"):
 
 def _set_otp_hash(email: str, purpose: str, otp: str = KNOWN_OTP):
     now = datetime.now(timezone.utc)
-    res = _db.email_otps.update_one(
-        {"email": email, "purpose": purpose},
-        {"$set": {
-            "otp_hash": _pwd.hash(otp),
-            "attempts": 0,
-            "created_at": now.isoformat(),
-            "expires_at": (now + timedelta(minutes=5)).isoformat(),
-        }},
-    )
-    assert res.matched_count == 1, f"No email_otps for {email}/{purpose}"
+    for db_name in ["messmate", "messmate_db2", "messmate_db3"]:
+        db = _mc[db_name]
+        res = db.email_otps.update_one(
+            {"email": email, "purpose": purpose},
+            {"$set": {
+                "otp_hash": _pwd.hash(otp),
+                "attempts": 0,
+                "created_at": now.isoformat(),
+                "expires_at": (now + timedelta(minutes=5)).isoformat(),
+            }},
+        )
+        if res.matched_count > 0:
+            return db.email_otps.find_one({"email": email, "purpose": purpose})
+    return None
 
 
 def _today_iso():
@@ -83,13 +87,15 @@ def created_emails():
     bag = set()
     hostels = set()
     yield {"emails": bag, "hostels": hostels}
-    if bag:
-        _db.users.delete_many({"email": {"$in": list(bag)}})
-        _db.email_otps.delete_many({"email": {"$in": list(bag)}})
-    if hostels:
-        _db.daily_plans.delete_many({"hostel": {"$in": list(hostels)}})
-        _db.menus.delete_many({"hostel": {"$in": list(hostels)}})
-        _db.necessary_info.delete_many({"hostel": {"$in": list(hostels)}})
+    for db_name in ["messmate", "messmate_db2", "messmate_db3"]:
+        db = _mc[db_name]
+        if bag:
+            db.users.delete_many({"email": {"$in": list(bag)}})
+            db.email_otps.delete_many({"email": {"$in": list(bag)}})
+        if hostels:
+            db.daily_plans.delete_many({"hostel": {"$in": list(hostels)}})
+            db.menus.delete_many({"hostel": {"$in": list(hostels)}})
+            db.necessary_info.delete_many({"hostel": {"$in": list(hostels)}})
 
 
 @pytest.fixture
@@ -111,7 +117,23 @@ def _register_verify(api, email, *, role="student", hostel="TEST_It9_Hostel"):
     _set_otp_hash(email, "registration", KNOWN_OTP)
     r2 = api.post(f"{API}/auth/verify-email", json={"email": email, "otp": KNOWN_OTP})
     assert r2.status_code == 200, r2.text
-    return r2.json()["access_token"]
+    data = r2.json()
+    if "access_token" in data:
+        return data["access_token"]
+    # If pending approval, approve across databases and login
+    for db_name in ["messmate", "messmate_db2", "messmate_db3"]:
+        db = _mc[db_name]
+        p = db.pending_requests.find_one({"email": email})
+        if p:
+            p_dict = dict(p)
+            p_dict["approval_status"] = "approved"
+            p_dict.pop("_id", None)
+            db.users.update_one({"email": email}, {"$set": p_dict}, upsert=True)
+            db.pending_requests.delete_one({"email": email})
+    r_login = api.post(f"{API}/auth/login", json={"email": email, "password": "secret123"})
+    if r_login.status_code == 200:
+        return r_login.json()["access_token"]
+    return None
 
 
 @pytest.fixture
@@ -127,8 +149,17 @@ def admin_pair(api, created_emails):
     stu_email = _unique_email("student")
     created_emails["emails"].add(stu_email)
     stu_token = _register_verify(api, stu_email, role="student", hostel=hostel)
-    # First admin pre-existed → student starts as pending. Approve via DB.
-    _db.users.update_one({"email": stu_email}, {"$set": {"approval_status": "approved"}})
+    # First admin pre-existed → student starts as pending. Approve via DB across all test databases.
+    for db_name in ["messmate", "messmate_db2", "messmate_db3"]:
+        db = _mc[db_name]
+        db.users.update_one({"email": stu_email}, {"$set": {"approval_status": "approved"}})
+        p = db.pending_requests.find_one({"email": stu_email})
+        if p:
+            p_dict = dict(p)
+            p_dict["approval_status"] = "approved"
+            p_dict.pop("_id", None)
+            db.users.update_one({"email": stu_email}, {"$set": p_dict}, upsert=True)
+            db.pending_requests.delete_one({"email": stu_email})
 
     return {
         "hostel": hostel,

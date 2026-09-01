@@ -39,10 +39,12 @@ async def test_fcm_token_storage_and_dispatch():
         }
     ]
     
-    # Mock users_col.find to return our simulated student record
+    # Mock users_col.find and push_tokens_col.find to return our simulated student record
     mock_find = MagicMock(return_value=AsyncIterator(mock_users_db))
+    mock_pt_find = MagicMock(return_value=AsyncIterator([]))
     
     with patch.object(server.users_col, "find", mock_find), \
+         patch.object(server.push_tokens_col, "find", mock_pt_find), \
          patch.object(server.users_col, "update_one", new_callable=AsyncMock) as mock_update, \
          patch.object(server.push_tokens_col, "update_one", new_callable=AsyncMock) as mock_push_update:
         

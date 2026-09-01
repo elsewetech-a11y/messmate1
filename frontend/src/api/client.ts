@@ -821,6 +821,11 @@ export const api = {
       method: "POST",
       token,
     }),
+  adminUnblock: (token: string, id: string) =>
+    request<{ ok: boolean; status?: string; message?: string }>(`/admin/students/${id}/unblock`, {
+      method: "POST",
+      token,
+    }),
   adminRemove: (token: string, id: string) =>
     request<{ ok: boolean; message?: string }>(`/admin/students/${id}/remove`, {
       method: "POST",

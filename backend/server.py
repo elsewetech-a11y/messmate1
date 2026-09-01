@@ -3642,26 +3642,26 @@ async def admin_approve(sid: str, u: dict = Depends(
         asyncio.create_task(ws_manager.broadcast_to_role(h, "admin", {"type": "admin_action"}))
         return {"ok": True, "status": "approved"}
 
-    # If it's already in users_col (e.g., previously pending or rejected)
-    # CRITICAL FIX: Also stamp admin_id here so subscription validation works correctly.
+    # If it's already in users_col (e.g., previously blocked, pending, or unblocked)
+    status_to_set = "approved"
     res = await users_col.update_one(
-        {"id": sid, "role": "student", "institution_or_hostel_name": h},
+        {"id": sid, "role": "student", "$or": [{"admin_id": u["id"]}, {"institution_or_hostel_name": h}]},
         {"$set": {"approval_status": status_to_set, "admin_id": u["id"], "updated_at": now_iso()}},
     )
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Student not found")
 
-    if status_to_set == "pending_capacity":
-        return {
-            "ok": True,
-            "status": "pending_capacity",
-            "message": "You have reached your subscribed student limit. Please upgrade your subscription to add more students."}
-
     import asyncio
     asyncio.create_task(log_activity(None, u["id"], u["role"], h, "ADMIN_APPROVED_STUDENT", f"Student ID: {sid}"))
     asyncio.create_task(ws_manager.broadcast_to_user(sid, {"type": "account_status_changed"}))
     asyncio.create_task(ws_manager.broadcast_to_role(h, "admin", {"type": "admin_action"}))
-    return {"ok": True, "status": "approved", "message": "Approved"}
+    return {"ok": True, "status": "approved", "message": "Student approved successfully"}
+
+
+@api.post("/admin/students/{sid}/unblock")
+async def admin_unblock(sid: str, u: dict = Depends(require_active_subscription_admin)):
+    """Unblock student and restore approved status."""
+    return await admin_approve(sid, u)
 
 
 @api.post("/admin/students/{sid}/reject")

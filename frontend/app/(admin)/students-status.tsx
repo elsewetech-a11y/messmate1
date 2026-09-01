@@ -218,10 +218,25 @@ export default function AdminStudentsStatus() {
     try {
       await api.adminBlock(token, id);
       setToast({ message: "Student blocked", variant: "info" });
-      load();
+      await load();
       if (activeList) fetchList(activeList);
     } catch (e: any) {
       setToast({ message: e?.message || "Failed", variant: "error" });
+    } finally {
+      setActing(null);
+    }
+  };
+
+  const onUnblock = async (id: string) => {
+    if (!token) return;
+    setActing(id);
+    try {
+      await api.adminUnblock(token, id);
+      setToast({ message: "Student unblocked successfully", variant: "success" });
+      await load();
+      if (activeList) fetchList(activeList);
+    } catch (e: any) {
+      setToast({ message: e?.message || "Failed to unblock student", variant: "error" });
     } finally {
       setActing(null);
     }
@@ -439,7 +454,7 @@ export default function AdminStudentsStatus() {
                             <TouchableOpacity
                               activeOpacity={0.85}
                               style={[styles.actBtn, { backgroundColor: c.primary }]}
-                              onPress={() => onApprove(s.id)}
+                              onPress={() => onUnblock(s.id)}
                               disabled={acting === s.id}
                             >
                               <Feather name="check" size={16} color="#fff" />
